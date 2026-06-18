@@ -99,7 +99,7 @@ const ThreeCanvas = forwardRef(function ThreeCanvas(
   const onSketchCommitRef     = useRef(onSketchCommit);
   const meshSurfaceRef        = useRef(null);
   const getBoundarySubdivsRef = useRef(null);
-  const hasSurfaceSelectedRef = useRef(false);
+  const hasSurfaceSelectedRef = useRef(0);
   const onSurfaceSelectChangeRef    = useRef(onSurfaceSelectChange);
   const onToolChangeRef             = useRef(onToolChange);
   const onSelectionCountChangeRef   = useRef(onSelectionCountChange);
@@ -181,7 +181,7 @@ const ThreeCanvas = forwardRef(function ThreeCanvas(
         ?? Promise.resolve({ error: 'Não inicializado.' });
     },
     hasSurfaceSelected() {
-      return hasSurfaceSelectedRef.current;
+      return hasSurfaceSelectedRef.current > 0;
     },
     getSurfaceBoundarySubdivs() {
       return getBoundarySubdivsRef.current?.() ?? null;
@@ -262,8 +262,15 @@ const ThreeCanvas = forwardRef(function ThreeCanvas(
       return raycaster.ray.intersectPlane(plane, hit) ? hit : null;
     };
 
+    // Indicador visual de snap de endpoint (anel amarelo)
+    const snapIndicatorGeo = new THREE.TorusGeometry(0.10, 0.025, 8, 20);
+    const snapIndicatorMat = new THREE.MeshBasicMaterial({ color: 0xffcc00, side: THREE.DoubleSide });
+    const snapIndicator    = new THREE.Mesh(snapIndicatorGeo, snapIndicatorMat);
+    snapIndicator.visible  = false;
+    scene.add(snapIndicator);
+
     const snapPoint = (worldPt) => {
-      if (!gridSnapRef.current) return worldPt;
+      if (!gridSnapRef.current || !gridVisualRef.current?.visible) return worldPt;
       const s = spacingRef.current;
       const local = pivot.worldToLocal(worldPt.clone());
       local.x = Math.round(local.x / s) * s;
@@ -279,10 +286,12 @@ const ThreeCanvas = forwardRef(function ThreeCanvas(
         worldTolerance = Math.max(0.1, spacingRef.current * 0.35),
       } = {},
     ) => {
-      let closestPoint = null;
-      let closestDistSq = pixelTolerance * pixelTolerance;
-      let closestWorldDist = worldTolerance;
       const rect = renderer.domElement.getBoundingClientRect();
+
+      // Passagem 1: snap por distância em pixels (funciona para qualquer plano).
+      // Encontra o endpoint mais próximo na tela, independente do plano de trabalho.
+      let closestByPixel = null;
+      let closestDistSq  = pixelTolerance * pixelTolerance;
 
       for (const line of committedLines) {
         if (line === excludeLine) continue;
@@ -295,31 +304,47 @@ const ThreeCanvas = forwardRef(function ThreeCanvas(
           const dx = screenX - clientX;
           const dy = screenY - clientY;
           const distSq = dx * dx + dy * dy;
-          const worldDist = worldPt
-            ? endpoint.distanceTo(worldPt)
-            : Number.POSITIVE_INFINITY;
 
-          if (distSq <= closestDistSq) {
-            closestDistSq = distSq;
-            closestWorldDist = worldDist;
-            closestPoint = endpoint;
-            continue;
-          }
-          if (worldDist <= closestWorldDist) {
-            closestDistSq = distSq;
-            closestWorldDist = worldDist;
-            closestPoint = endpoint;
+          if (distSq < closestDistSq) {
+            closestDistSq  = distSq;
+            closestByPixel = endpoint;
           }
         }
       }
-      return closestPoint?.clone() ?? null;
+      if (closestByPixel) return closestByPixel.clone();
+
+      // Passagem 2: snap por distância no mundo (fallback quando o zoom é grande
+      // e o cursor não fica exatamente sobre o endpoint em pixels).
+      if (!worldPt) return null;
+      let closestByWorld = null;
+      let closestWorldDist = worldTolerance;
+
+      for (const line of committedLines) {
+        if (line === excludeLine) continue;
+        for (const endpoint of getLineEndpoints(line)) {
+          const worldDist = endpoint.distanceTo(worldPt);
+          if (worldDist < closestWorldDist) {
+            closestWorldDist = worldDist;
+            closestByWorld   = endpoint;
+          }
+        }
+      }
+      return closestByWorld?.clone() ?? null;
     };
 
     const resolveSnapPoint = (worldPt, clientX, clientY, options = {}) => {
-      if (!worldPt) return null;
-      const snappedGridPoint = snapPoint(worldPt);
-      const endpointPoint = findEndpointSnapTarget(clientX, clientY, snappedGridPoint, options);
-      return endpointPoint ?? snappedGridPoint;
+      // Endpoint snap é tentado SEMPRE, mesmo quando worldPt é null
+      // (ocorre quando a câmera está quase paralela ao plano de trabalho)
+      const endpointPoint = findEndpointSnapTarget(clientX, clientY, worldPt, options);
+      if (endpointPoint && activeToolRef.current !== "select") {
+        snapIndicator.position.copy(endpointPoint);
+        snapIndicator.quaternion.copy(camera.quaternion);
+        snapIndicator.visible = true;
+        return endpointPoint;
+      }
+      snapIndicator.visible = false;
+      if (!worldPt) return endpointPoint ?? null;
+      return endpointPoint ?? snapPoint(worldPt);
     };
 
     // ═══════════════════════════════════════════════════════════════════════════
@@ -337,9 +362,9 @@ const ThreeCanvas = forwardRef(function ThreeCanvas(
     const dotMat     = new THREE.MeshBasicMaterial({ color: 0x2266ff });
 
     let hoveredLine    = null;
-    const selectedLines = [];
+    const selectedLines    = [];
+    const selectedSurfaces = [];
     let hoveredSurface  = null;
-    let selectedSurface = null;
 
     const isLineSelected   = (line) => selectedLines.includes(line);
     const getEditableLine  = ()     => selectedLines.length === 1 ? selectedLines[0] : null;
@@ -349,9 +374,10 @@ const ThreeCanvas = forwardRef(function ThreeCanvas(
     };
 
     const syncSurfaceSelect = () => {
-      const has = !!selectedSurface;
-      if (hasSurfaceSelectedRef.current !== has) {
-        hasSurfaceSelectedRef.current = has;
+      const count = selectedSurfaces.length;
+      const has   = count > 0;
+      if (hasSurfaceSelectedRef.current !== count) {
+        hasSurfaceSelectedRef.current = count;
         onSurfaceSelectChangeRef.current?.(has);
       }
     };
@@ -372,7 +398,7 @@ const ThreeCanvas = forwardRef(function ThreeCanvas(
         : surface.material;
       if (!material) return;
 
-      const isSelected = surface === selectedSurface;
+      const isSelected = selectedSurfaces.includes(surface);
       const isHovered  = surface === hoveredSurface;
       material.color.setHex(
         isSelected ? SURFACE_SELECTED_COLOR
@@ -394,7 +420,8 @@ const ThreeCanvas = forwardRef(function ThreeCanvas(
 
     const removeSurfaceMesh = (mesh) => {
       if (hoveredSurface === mesh) hoveredSurface = null;
-      if (selectedSurface === mesh) selectedSurface = null;
+      const selIdx = selectedSurfaces.indexOf(mesh);
+      if (selIdx >= 0) selectedSurfaces.splice(selIdx, 1);
       mesh.children.forEach((child) => {
         scene.remove(child);
         if (child.geometry) child.geometry.dispose();
@@ -508,11 +535,9 @@ const ThreeCanvas = forwardRef(function ThreeCanvas(
       selectedLines.length = 0;
       hoveredLine    = null;
       hoveredSurface = null;
-      if (selectedSurface) {
-        const prev = selectedSurface;
-        selectedSurface = null;
-        updateSurfaceVisual(prev);
-      }
+      const prevSurfaces = [...selectedSurfaces];
+      selectedSurfaces.length = 0;
+      prevSurfaces.forEach(updateSurfaceVisual);
       draggingHandle = null;
       hideEditHandles();
       renderer.domElement.style.cursor = "default";
@@ -556,6 +581,7 @@ const ThreeCanvas = forwardRef(function ThreeCanvas(
       previewDots.forEach((m) => scene.remove(m));
       previewDots.length = 0;
       removePrevCurve();
+      snapIndicator.visible = false;
     };
     cancelDrawingRef.current = cancelDrawing;
 
@@ -598,12 +624,16 @@ const ThreeCanvas = forwardRef(function ThreeCanvas(
     // ── Malha FEM ─────────────────────────────────────────────────────────────
     meshSurfaceRef.current = createMeshSurface({
       scene,
-      getSelectedSurface: () => selectedSurface,
+      getSelectedSurfaces: () => selectedSurfaces,
       computeSubdivTs,
     });
 
     getBoundarySubdivsRef.current = () => {
-      const src = selectedSurface?.userData?.sourceCurves;
+      if (selectedSurfaces.length === 0) return null;
+      if (selectedSurfaces.length > 1) {
+        return { surfaceCount: selectedSurfaces.length };
+      }
+      const src = selectedSurfaces[0]?.userData?.sourceCurves;
       if (!src || src.type !== 'loop' || src.curves.length < 3) return null;
       const c0 = src.curves[0], c1 = src.curves[1];
       return {
@@ -720,7 +750,7 @@ const ThreeCanvas = forwardRef(function ThreeCanvas(
             }
           }
 
-          if (hoveredSurface && hoveredSurface !== selectedSurface) {
+          if (hoveredSurface && !selectedSurfaces.includes(hoveredSurface)) {
             updateSurfaceVisual(hoveredSurface);
           }
 
@@ -729,7 +759,7 @@ const ThreeCanvas = forwardRef(function ThreeCanvas(
             surfaceRay.setFromCamera(ndc, camera);
             const surfaceHits = surfaceRay.intersectObjects(surfaceMeshes, false);
             hoveredSurface = surfaceHits.length > 0 ? surfaceHits[0].object : null;
-            if (hoveredSurface && hoveredSurface !== selectedSurface) {
+            if (hoveredSurface && !selectedSurfaces.includes(hoveredSurface)) {
               updateSurfaceVisual(hoveredSurface);
             }
           } else {
@@ -783,11 +813,9 @@ const ThreeCanvas = forwardRef(function ThreeCanvas(
           const lineHits = pickRay.intersectObjects(committedLines);
 
           if (lineHits.length > 0) {
-            if (selectedSurface) {
-              const prev = selectedSurface;
-              selectedSurface = null;
-              updateSurfaceVisual(prev);
-            }
+            const prevSurfs = [...selectedSurfaces];
+            selectedSurfaces.length = 0;
+            prevSurfs.forEach(updateSurfaceVisual);
             const line          = lineHits[0].object;
             const selectedIndex = selectedLines.indexOf(line);
             if (selectedIndex >= 0) selectedLines.splice(selectedIndex, 1);
@@ -805,15 +833,13 @@ const ThreeCanvas = forwardRef(function ThreeCanvas(
               selectedLines.length = 0;
               hoveredLine = null;
               const nextSurface = surfaceHits[0].object;
-              if (selectedSurface === nextSurface) {
-                const prev = selectedSurface;
-                selectedSurface = null;
-                updateSurfaceVisual(prev);
+              const idx = selectedSurfaces.indexOf(nextSurface);
+              if (idx >= 0) {
+                selectedSurfaces.splice(idx, 1);
               } else {
-                if (selectedSurface) updateSurfaceVisual(selectedSurface);
-                selectedSurface = nextSurface;
-                updateSurfaceVisual(selectedSurface);
+                selectedSurfaces.push(nextSurface);
               }
+              updateSurfaceVisual(nextSurface);
               hideEditHandles();
               syncSelectionVisuals();
               return;
@@ -905,12 +931,14 @@ const ThreeCanvas = forwardRef(function ThreeCanvas(
           hideEditHandles();
           syncSelectionCount();
         }
-        if (selectedSurface) {
-          const mesh = selectedSurface;
-          selectedSurface = null;
-          const idx = surfaceMeshes.indexOf(mesh);
-          if (idx !== -1) surfaceMeshes.splice(idx, 1);
-          removeSurfaceMesh(mesh);
+        if (selectedSurfaces.length > 0) {
+          const toDelete = [...selectedSurfaces];
+          selectedSurfaces.length = 0;
+          toDelete.forEach((mesh) => {
+            const idx = surfaceMeshes.indexOf(mesh);
+            if (idx !== -1) surfaceMeshes.splice(idx, 1);
+            removeSurfaceMesh(mesh);
+          });
           syncSelectionCount();
         }
         return;

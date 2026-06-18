@@ -1,19 +1,28 @@
-# Dependências — instale com: npm install (dentro de frontend/)
+# Dependencies
 node_modules/
 
 # Build outputs
 frontend/dist/
 frontend/.vite/
+mesh_server/build_wasm/
+mesh_server/build_win/
 
 # Logs
 *.log
 npm-debug.log*
 yarn-debug.log*
+yarn-error.log*
 
-# Variáveis de ambiente
+# Environment variables
 .env
 .env.local
 .env.*.local
+
+# Python backend
+backend/.venv/
+backend/storage/
+backend/**/__pycache__/
+*.pyc
 
 # Editor / OS
 .DS_Store
@@ -25,9 +34,36 @@ Thumbs.db
 *~
 .vscode/
 
-# Executável do servidor (obtido com o professor, não versionado)
-mesh_server/mesh_server.exe
-mesh_server/mesh_server
+# C/C++ compiled objects
+*.o
+*.obj
+*.a
+*.lib
+*.dll
+*.so
+*.dylib
+*.exe
+*.wasm
 
-# Nota: mesh.wasm, mesh.js e opencascade.wasm.wasm em frontend/public/
-# são INTENCIONALMENTE versionados neste repositório (binários pré-compilados).
+# CMake
+CMakeCache.txt
+CMakeFiles/
+cmake_install.cmake
+Makefile
+
+# LaTeX (aulas/)
+*.aux
+*.bbl
+*.blg
+*.fdb_latexmk
+*.fls
+*.lof
+*.lot
+*.out
+*.toc
+*.synctex.gz
+*.nav
+*.snm
+*.vrb
+*.dvi
+*.pdf

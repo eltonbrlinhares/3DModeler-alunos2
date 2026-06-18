@@ -1,77 +1,115 @@
-# 3DModeler.js — Projeto do Curso
+# edIFC-UnB / 3DModeler.js - Projeto do Curso
 
-Modelador 3D interativo baseado em Three.js, React e OpenCascade.js (WASM).
+Aplicacao web para modelagem geometrica 3D, edicao IFC e geracao de malhas.
+Esta versao do repositorio dos alunos inclui:
 
-## Estrutura do repositório
+- `frontend/`: interface React + Three.js + Vite.
+- `backend/`: API FastAPI + IfcOpenShell para criar, editar, salvar e exportar IFC.
+- `mesh_server/`: scripts/apoio para servidor de malha quando usado na disciplina.
+- `start.ps1` e `start.bat`: inicializacao do frontend e backend no Windows.
 
+## Requisitos
+
+- Node.js LTS e npm.
+- Python 3.11+.
+- Navegador moderno com WebAssembly.
+
+## Inicio rapido no Windows
+
+Na raiz do repositorio:
+
+```powershell
+.\start.ps1
 ```
-3DModeler-alunos/
-├── frontend/          # Aplicação React/Vite — código-fonte principal
-│   ├── public/        # Binários WASM pré-compilados (não editar)
-│   └── src/           # Código-fonte JavaScript/JSX (aqui você vai trabalhar)
-└── mesh_server/       # Scripts para rodar o servidor de malha
-    ├── run_server.ps1 # Windows
-    └── run_server.sh  # Linux/macOS
+
+Ou:
+
+```bat
+start.bat
 ```
 
-## Pré-requisitos
+Os scripts criam/validam `backend/.venv`, instalam dependencias Python,
+instalam `frontend/node_modules` quando necessario e abrem:
 
-- [Node.js](https://nodejs.org/) 18+
-- Executável `mesh_server` (solicitar ao professor)
+- Frontend: http://localhost:5173
+- Backend: http://localhost:8000
+- Swagger/OpenAPI: http://localhost:8000/docs
 
-## Configuração inicial
+## Execucao manual
 
-```bash
-# 1. Clone o repositório
-git clone https://github.com/<org>/3DModeler-alunos.git
-cd 3DModeler-alunos
+Backend:
 
-# 2. Crie seu branch de trabalho
-git checkout -b aluno/seu-nome
+```powershell
+cd backend
+python -m venv .venv
+.\.venv\Scripts\Activate.ps1
+pip install -r requirements.txt
+uvicorn app.main:app --reload --host 127.0.0.1 --port 8000
+```
 
-# 3. Instale as dependências do frontend
+Frontend:
+
+```powershell
 cd frontend
 npm install
-
-# 4. Inicie o servidor de desenvolvimento
 npm run dev
 ```
 
-Acesse em [http://localhost:5173](http://localhost:5173).
-
-## Servidor de malha
-
-O frontend se comunica com um servidor local de malha na porta **7070**.
-Coloque o executável (`mesh_server.exe` / `mesh_server`) na pasta `mesh_server/` e execute:
+Se o backend estiver em outra URL:
 
 ```powershell
-# Windows
-.\mesh_server\run_server.ps1
-```
-```bash
-# Linux/macOS
-./mesh_server/run_server.sh
+$env:VITE_IFC_API="http://localhost:8000"
+npm run dev
 ```
 
-## Fluxo de trabalho (por aluno)
+## Funcionalidades principais
+
+- Viewport 3D com Three.js, grid editavel, planos de trabalho e snaps.
+- Desenho de curvas, superficies e malhas no frontend.
+- Editor IFC integrado `edIFC-UnB` com niveis, grids, datums, paredes, lajes,
+  colunas, vigas, selecao por raycast e gizmo local de translacao/rotacao.
+- Snap de insercao nas intersecoes de planos/niveis/grids.
+- Backend IFC para upload, criacao, edicao, validacao, save, download `.ifc`
+  e exportacao `.glb`.
+
+## Fluxo de trabalho dos alunos
 
 ```bash
-# Certifique-se de estar no seu branch
-git checkout aluno/seu-nome
+git clone https://github.com/amirandaspace/3DModeler-alunos.git
+cd 3DModeler-alunos
+git checkout -b aluno/seu-nome
+```
 
-# Implemente, commite e envie
+Depois de implementar:
+
+```bash
 git add .
-git commit -m "descrição da implementação"
+git commit -m "descricao da implementacao"
 git push origin aluno/seu-nome
 ```
 
-> **Nunca commite diretamente no `main`.** O branch `main` é protegido e serve como base para todos.
+Evite commitar arquivos gerados como `node_modules`, `frontend/dist`,
+`backend/.venv` e `backend/storage`.
 
-## Tecnologias
+## Testes
 
-| Tecnologia | Papel |
-|---|---|
-| [React](https://react.dev/) + [Vite](https://vitejs.dev/) | UI e bundler |
-| [Three.js](https://threejs.org/) | Renderização 3D |
-| [OpenCascade.js](https://ocjs.org/) | Modelagem B-Rep (WASM) |
-| mesh_server | Geração de malhas 2D/3D (servidor local) |
+Backend:
+
+```powershell
+cd backend
+.\.venv\Scripts\python.exe -m pytest tests\test_smoke.py
+```
+
+Frontend:
+
+```powershell
+cd frontend
+npm run lint
+npm run build
+```
+
+## Observacoes
+
+- Coordenadas: Z-up, em metros, tanto no frontend quanto no backend IFC.
+- O backend libera CORS para `localhost`/`127.0.0.1` durante desenvolvimento.
+- Modelos salvos localmente ficam em `backend/storage`, que nao deve ser commitado.

@@ -2,26 +2,26 @@
  * SurfaceMeshPanel.jsx
  *
  * Painel flutuante para gerar malha de elementos finitos em uma superfície.
- * Exibe opções de algoritmo, tipo de elemento e divisões U/V.
- * Quando o usuário clica "Gerar Malha", chama onGenerate com os parâmetros.
+ * Suporta malha 2D (superfície única) e malha 3D por template hexaédrico
+ * (múltiplas superfícies com malha 2D já gerada).
  */
 
 import { useState } from "react";
 
 const ALGORITHMS = [
-  { id: "bilinear",     label: "Bilinear",          hasUV: true,  defaultElem: 4 },
-  { id: "bilinear",     label: "Bilinear T3",        hasUV: true,  defaultElem: 3 },
-  { id: "collbilinear", label: "CollBilinear T3",    hasUV: true,  defaultElem: 3 },
-  { id: "loft",         label: "Loft Q4",            hasUV: true,  defaultElem: 4 },
-  { id: "loft",         label: "Loft T3",            hasUV: true,  defaultElem: 3 },
-  { id: "trilinear",    label: "Trilinear T3",       hasUV: false, defaultElem: 3 },
-  { id: "template",     label: "Template Q4",        hasUV: false, defaultElem: 4 },
+  { id: "bilinear",     label: "Bilinear",          hasUV: true,  defaultElem: 4, is3D: false },
+  { id: "bilinear",     label: "Bilinear T3",        hasUV: true,  defaultElem: 3, is3D: false },
+  { id: "collbilinear", label: "CollBilinear T3",    hasUV: true,  defaultElem: 3, is3D: false },
+  { id: "loft",         label: "Loft Q4",            hasUV: true,  defaultElem: 4, is3D: false },
+  { id: "loft",         label: "Loft T3",            hasUV: true,  defaultElem: 3, is3D: false },
+  { id: "trilinear",    label: "Trilinear T3",       hasUV: false, defaultElem: 3, is3D: false },
+  { id: "template",     label: "Template Q4",        hasUV: false, defaultElem: 4, is3D: false },
+  { id: "3d_template",  label: "Template 3D H8",     hasUV: false, defaultElem: 8, is3D: true  },
 ];
 
-// deduplicate with unique key
 const ALGO_LIST = ALGORITHMS.map((a, i) => ({ ...a, key: `${a.id}_${a.defaultElem}_${i}` }));
 
-const ELEM_NAMES = { 3: "T3", 4: "Q4", 6: "T6", 8: "Q8" };
+const ELEM_NAMES = { 3: "T3", 4: "Q4", 6: "T6", 8: "H8" };
 
 const BTN = {
   width: "100%",
@@ -65,11 +65,21 @@ export default function SurfaceMeshPanel({
   if (!open) return null;
 
   const algo = ALGO_LIST.find((a) => a.key === algoKey) ?? ALGO_LIST[0];
+  const surfaceCount = subdivs?.surfaceCount ?? 1;
+  const isMulti = surfaceCount > 1;
+
+  // Para Template 3D requer múltiplas superfícies; para 2D requer exatamente 1
+  const canGenerate = hasSurface && !loading
+    && (algo.is3D ? isMulti : !isMulti);
 
   const handleGenerate = () => {
-    if (!hasSurface || loading) return;
+    if (!canGenerate) return;
     onGenerate({ algo: algo.id, elem_type: algo.defaultElem });
   };
+
+  const modeHint = algo.is3D
+    ? `Selecione ${surfaceCount < 2 ? "2+" : surfaceCount} superfícies com malha 2D gerada`
+    : "Selecione exatamente 1 superfície";
 
   return (
     <div
@@ -81,7 +91,7 @@ export default function SurfaceMeshPanel({
         color: "#f1f5f9",
         borderRadius: 8,
         padding: "14px 16px",
-        width: 220,
+        width: 230,
         zIndex: 20,
         fontSize: 13,
         boxShadow: "0 4px 24px #0009",
@@ -114,32 +124,58 @@ export default function SurfaceMeshPanel({
         </select>
       </label>
 
-      {/* Divisions — read-only, from boundary curves */}
-      {algo.hasUV && (
-        <div style={{ marginBottom: 10 }}>
-          <span style={HINT}>DIVISÕES (das curvas do contorno)</span>
-          <div style={{
-            marginTop: 4,
-            padding: "5px 8px",
-            background: "#1e293b",
-            borderRadius: 4,
-            border: "1px solid #334155",
-            fontSize: 12,
-            color: subdivs ? "#a5f3fc" : "#64748b",
-          }}>
-            {subdivs
-              ? `U: ${subdivs.u} seg${subdivs.ratioU && Math.abs(subdivs.ratioU - 1) > 0.01 ? ` r${subdivs.ratioU.toFixed(2)}` : ""} · V: ${subdivs.v} seg${subdivs.ratioV && Math.abs(subdivs.ratioV - 1) > 0.01 ? ` r${subdivs.ratioV.toFixed(2)}` : ""}`
-              : "— selecione uma superfície —"}
-          </div>
+      {/* Info de seleção */}
+      <div style={{ marginBottom: 10 }}>
+        {algo.is3D ? (
+          <>
+            <span style={HINT}>SUPERFÍCIES SELECIONADAS</span>
+            <div style={{
+              marginTop: 4,
+              padding: "5px 8px",
+              background: "#1e293b",
+              borderRadius: 4,
+              border: "1px solid #334155",
+              fontSize: 12,
+              color: isMulti ? "#a5f3fc" : "#64748b",
+            }}>
+              {isMulti
+                ? `${surfaceCount} superfícies — prontas para Template 3D`
+                : "— selecione 2 ou mais superfícies com malha 2D —"}
+            </div>
+          </>
+        ) : algo.hasUV && (
+          <>
+            <span style={HINT}>DIVISÕES (das curvas do contorno)</span>
+            <div style={{
+              marginTop: 4,
+              padding: "5px 8px",
+              background: "#1e293b",
+              borderRadius: 4,
+              border: "1px solid #334155",
+              fontSize: 12,
+              color: subdivs && !isMulti ? "#a5f3fc" : "#64748b",
+            }}>
+              {subdivs && !isMulti
+                ? `U: ${subdivs.u} seg${subdivs.ratioU && Math.abs(subdivs.ratioU - 1) > 0.01 ? ` r${subdivs.ratioU.toFixed(2)}` : ""} · V: ${subdivs.v} seg${subdivs.ratioV && Math.abs(subdivs.ratioV - 1) > 0.01 ? ` r${subdivs.ratioV.toFixed(2)}` : ""}`
+                : "— selecione uma superfície —"}
+            </div>
+          </>
+        )}
+      </div>
+
+      {/* Hint de modo */}
+      {hasSurface && !canGenerate && (
+        <div style={{ color: "#fbbf24", fontSize: 11, marginBottom: 8 }}>
+          ⚠ {modeHint}
         </div>
       )}
-
-      {/* Status messages */}
       {!hasSurface && (
         <div style={{ color: "#fbbf24", fontSize: 11, marginBottom: 8 }}>
           Clique em uma superfície para selecioná-la.
         </div>
       )}
+
+      {/* Status */}
       {error && (
         <div style={{ color: "#f87171", fontSize: 11, marginBottom: 8, wordBreak: "break-word" }}>
           ✗ {error}
@@ -154,14 +190,14 @@ export default function SurfaceMeshPanel({
       {/* Generate button */}
       <button
         onClick={handleGenerate}
-        disabled={!hasSurface || loading}
+        disabled={!canGenerate}
         style={{
           ...BTN,
-          background: hasSurface && !loading ? "#0369a1" : "#1e293b",
-          color:      hasSurface && !loading ? "#e0f2fe" : "#475569",
+          background: canGenerate ? "#0369a1" : "#1e293b",
+          color:      canGenerate ? "#e0f2fe" : "#475569",
         }}
       >
-        {loading ? "Gerando…" : "Gerar Malha"}
+        {loading ? "Gerando…" : algo.is3D ? "Gerar Malha 3D" : "Gerar Malha"}
       </button>
     </div>
   );

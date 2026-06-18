@@ -18,7 +18,19 @@ export function femWireframeGeometry(result) {
   const edgeSet = new Set();
   const addEdge = (a, b) => edgeSet.add(a < b ? `${a},${b}` : `${b},${a}`);
 
-  if (elem_size === 4) {
+  if (elem_size === 8) {
+    // Hexaédrico H8: faces inferior (0-3), superior (4-7) e laterais
+    for (let i = 0; i < n_elements; i++) {
+      const b = i * 8;
+      const [a0,a1,a2,a3,a4,a5,a6,a7] = [
+        index[b], index[b+1], index[b+2], index[b+3],
+        index[b+4], index[b+5], index[b+6], index[b+7],
+      ];
+      addEdge(a0,a1); addEdge(a1,a2); addEdge(a2,a3); addEdge(a3,a0);
+      addEdge(a4,a5); addEdge(a5,a6); addEdge(a6,a7); addEdge(a7,a4);
+      addEdge(a0,a4); addEdge(a1,a5); addEdge(a2,a6); addEdge(a3,a7);
+    }
+  } else if (elem_size === 4) {
     for (let i = 0; i < n_elements; i++) {
       const a = index[i * 4], b = index[i * 4 + 1],
             c = index[i * 4 + 2], d = index[i * 4 + 3];

@@ -31,6 +31,7 @@ import VolumeEditorUI from "./components/VolumeEditorUI";
 import ViewCube from "./components/ViewCube";
 import CurveSubdivDialog from "./components/CurveSubdivDialog";
 import SurfaceMeshPanel from "./components/SurfaceMeshPanel";
+import IfcPanel from "./components/IfcPanel";
 
 /**
  * ThreeGrid — componente principal da aplicação.
@@ -281,6 +282,9 @@ export default function ThreeGrid() {
     input.click();
   };
 
+  // ── Estado do editor IFC ───────────────────────────────────────────────────
+  const [ifcOpen, setIfcOpen] = useState(false);
+
   // ── Estado dos controles do plano de trabalho ──────────────────────────────
   const [workPlaneControls, setWorkPlaneControls] = useState(true);
 
@@ -354,6 +358,47 @@ export default function ThreeGrid() {
 
         {/* ViewCube — orientação 3D (canto superior direito) */}
         <ViewCube canvasRef={canvasRef} />
+
+        {/* Botão de abrir/fechar o editor IFC */}
+        {!ifcOpen && (
+          <button
+            onClick={() => setIfcOpen(true)}
+            title="Abrir editor IFC 3D"
+            style={{
+              position: "absolute",
+              bottom: 12,
+              right: 12,
+              zIndex: 19,
+              padding: "8px 12px",
+              background: "rgba(17,24,39,0.95)",
+              color: "#e5e7eb",
+              border: "1px solid #4b5563",
+              borderRadius: 8,
+              cursor: "pointer",
+              font: "12px system-ui, sans-serif",
+              display: "inline-flex",
+              alignItems: "center",
+              gap: 6,
+            }}
+          >
+            <img
+              src="/edifc-unb.svg"
+              alt=""
+              style={{ width: 18, height: 18, display: "block" }}
+            />
+            edIFC-UnB
+          </button>
+        )}
+
+        {/* Painel do editor IFC (direita) */}
+        {ifcOpen && (
+          <IfcPanel
+            canvasRef={canvasRef}
+            onClose={() => setIfcOpen(false)}
+            translationSnap={translationSnap}
+            rotationSnap={rotationSnap}
+          />
+        )}
 
         {/* Painel de edição volumétrica (direita) — visível quando volumeOpen */}
         {volumeOpen && (
