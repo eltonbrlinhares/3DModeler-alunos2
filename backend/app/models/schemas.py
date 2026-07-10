@@ -101,6 +101,12 @@ class CreateColumnRequest(BaseModel):
 
 class CreateBeamRequest(BaseModel):
     name: str | None = None
+    profile: str | None = None
+    shape: str | None = None
+    h: float | None = Field(default=None, gt=0)
+    b: float | None = Field(default=None, gt=0)
+    tw: float | None = Field(default=None, gt=0)
+    tf: float | None = Field(default=None, gt=0)
     width: float = Field(default=0.2, gt=0)
     depth: float = Field(default=0.3, gt=0)
     length: float = Field(default=5.0, gt=0)

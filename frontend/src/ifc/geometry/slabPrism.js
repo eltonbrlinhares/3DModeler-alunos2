@@ -1,9 +1,9 @@
 /**
  * src/ifc/geometry/slabPrism.js
  *
- * Funções PURAS para a laje: área assinada do polígono, prisma extrudado para
- * baixo a partir do contorno superior, e conversão do contorno para coordenadas
- * locais (relativas ao primeiro ponto) no formato que o backend espera.
+ * Funções PURAS para a laje: área assinada do polígono, prisma extrudado a
+ * partir do contorno clicado, e conversão do contorno para coordenadas locais
+ * (relativas ao primeiro ponto) no formato que o backend espera.
  */
 import * as THREE from "three";
 import { SLAB_MIN_AREA } from "../insertion/constants.js";
@@ -20,17 +20,30 @@ export function polygonAreaXY(points) {
 }
 
 /**
- * Prisma da laje a partir do contorno superior (lista de Vector3 no nível).
+ * Prisma da laje a partir do contorno clicado (lista de Vector3 no nível).
+ * `axisRef` define o que o contorno clicado representa na espessura:
+ *   - "top"    (padrão): contorno = TOPO da laje, extruda para baixo
+ *   - "bottom": contorno = BASE da laje, extruda para cima
+ *   - "center": contorno = CENTRO (meia espessura), extruda para os dois lados
  * @param {THREE.Vector3[]} points contorno (>= 3 pontos)
- * @param {number} thickness espessura (m), extrudada para baixo
+ * @param {number} thickness espessura (m)
+ * @param {"top"|"center"|"bottom"} [axisRef="top"] o que o contorno representa
  * @returns {THREE.BufferGeometry|null}
  */
-export function slabPrism(points, thickness) {
+export function slabPrism(points, thickness, axisRef = "top") {
   if (points.length < 3 || Math.abs(polygonAreaXY(points)) < SLAB_MIN_AREA) {
     return null;
   }
-  const topZ = points[0].z;
-  const bottomZ = topZ - Math.max(0.02, thickness);
+  const t = Math.max(0.02, thickness);
+  let topZ;
+  if (axisRef === "bottom") {
+    topZ = points[0].z + t;
+  } else if (axisRef === "center") {
+    topZ = points[0].z + t / 2;
+  } else {
+    topZ = points[0].z; // "top" (padrão)
+  }
+  const bottomZ = topZ - t;
   const shapePoints = points.map((p) => new THREE.Vector2(p.x, p.y));
   const triangles = THREE.ShapeUtils.triangulateShape(shapePoints, []);
   if (!triangles.length) return null;

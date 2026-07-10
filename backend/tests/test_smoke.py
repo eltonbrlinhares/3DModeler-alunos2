@@ -175,6 +175,26 @@ def test_create_beam_horizontal():
     assert abs(sy - 0.2) < 1e-5 and abs(sz - 0.3) < 1e-5
 
 
+def test_create_beam_with_profile():
+    mid = _new_model()
+    guid = client.post(
+        f"/ifc/models/{mid}/geometry/beam",
+        json={
+            "name": "B-profile",
+            "profile": "W310X23.8",
+            "shape": "I",
+            "h": 0.305,
+            "b": 0.101,
+            "tw": 0.00559,
+            "tf": 0.00673,
+            "length": 5,
+        },
+    ).json()["guid"]
+    sx, sy, sz = _span(client.get(f"/ifc/models/{mid}/mesh/{guid}").json())
+    assert abs(sx - 5) < 1e-5  # eixo da viga
+    assert abs(sy - 0.101) < 1e-5 and abs(sz - 0.305) < 1e-5
+
+
 def test_rotate_swaps_extent():
     """rotate_z=90° troca os eixos da extensão da parede (x<->y)."""
     import math

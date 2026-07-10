@@ -21,76 +21,35 @@ import { InsertionController } from "../ifc/insertion/InsertionController.js";
 import { SelectionController } from "../ifc/insertion/SelectionController.js";
 import { TransformController } from "../ifc/insertion/TransformController.js";
 import { INSERTION_TOOLS } from "../ifc/tools/index.js";
+import {
+  STEEL_COLUMN_FAMILIES,
+  STEEL_FAMILY_OPTIONS,
+} from "../data/steelColumnProfiles.js";
+import {
+  STEEL_BEAM_FAMILIES,
+  STEEL_BEAM_FAMILY_OPTIONS,
+} from "../data/steelBeamProfiles.js";
 
 // O seletor de tipo, os campos do formulário e o botão "+ Elemento" são
 // dirigidos pelo registro de ferramentas (cada uma carrega label/fields/defaults).
 const ELEMENT_FORMS = INSERTION_TOOLS;
 
-const COLUMN_PROFILE_OPTIONS = [
-  {
-    value: "W200x15",
-    label: "W200x15",
-    shape: "H",
-    h: 0.203,
-    b: 0.102,
-    tw: 0.0058,
-    tf: 0.0084,
-  },
-  {
-    value: "W250x25",
-    label: "W250x25",
-    shape: "H",
-    h: 0.257,
-    b: 0.146,
-    tw: 0.0061,
-    tf: 0.0086,
-  },
-  {
-    value: "IPE200",
-    label: "IPE 200",
-    shape: "I",
-    h: 0.200,
-    b: 0.100,
-    tw: 0.0058,
-    tf: 0.0084,
-  },
-  {
-    value: "IPE300",
-    label: "IPE 300",
-    shape: "I",
-    h: 0.300,
-    b: 0.150,
-    tw: 0.0069,
-    tf: 0.0102,
-  },
-  {
-    value: "HEA200",
-    label: "HEA 200",
-    shape: "H",
-    h: 0.200,
-    b: 0.194,
-    tw: 0.0065,
-    tf: 0.0107,
-  },
-  {
-    value: "HEB200",
-    label: "HEB 200",
-    shape: "H",
-    h: 0.200,
-    b: 0.200,
-    tw: 0.0064,
-    tf: 0.0102,
-  },
-  {
-    value: "custom",
-    label: "Personalizado...",
-    shape: "I",
-    h: 0.300,
-    b: 0.150,
-    tw: 0.0063,
-    tf: 0.0095,
-  },
+// Aba "Coluna metálica": famílias de catálogo (HP/W/CVS/CS) + opção de perfil
+// personalizado. As famílias vêm de src/data/steelColumnProfiles.js, geradas a
+// partir das tabelas de fabricante (Gerdau HP/W, ArcelorMittal CVS/CS).
+const STEEL_FAMILY_SELECT_OPTIONS = [
+  ...STEEL_FAMILY_OPTIONS,
+  { value: "custom", label: "Personalizado..." },
 ];
+const DEFAULT_STEEL_FAMILY = STEEL_FAMILY_OPTIONS[0]?.value ?? "custom";
+
+// Aba "Viga metálica": famílias de catálogo (HP/W/CVS/VS) + personalizado.
+// Vêm de src/data/steelBeamProfiles.js (Gerdau HP/W, ArcelorMittal CVS/VS).
+const STEEL_BEAM_FAMILY_SELECT_OPTIONS = [
+  ...STEEL_BEAM_FAMILY_OPTIONS,
+  { value: "custom", label: "Personalizado..." },
+];
+const DEFAULT_STEEL_BEAM_FAMILY = STEEL_BEAM_FAMILY_OPTIONS[0]?.value ?? "custom";
 
 export default function IfcPanel({
   canvasRef,
@@ -111,8 +70,11 @@ export default function IfcPanel({
   const [dims, setDims] = useState({ length: 5, height: 3, thickness: 0.2 });
   const [rename, setRename] = useState("");
   const [insertMode, setInsertMode] = useState(null);
-  const [columnProfilePreset, setColumnProfilePreset] = useState(
-    COLUMN_PROFILE_OPTIONS[0].value
+  // aba da coluna: "concrete" (dimensões livres) ou "steel" (catálogo de perfis)
+  const [columnKind, setColumnKind] = useState("concrete");
+  const [steelFamily, setSteelFamily] = useState(DEFAULT_STEEL_FAMILY);
+  const [steelProfileValue, setSteelProfileValue] = useState(
+    STEEL_COLUMN_FAMILIES[DEFAULT_STEEL_FAMILY]?.profiles?.[0]?.value ?? ""
   );
   const [columnProfileCustom, setColumnProfileCustom] = useState({
     h: 300,
@@ -121,6 +83,28 @@ export default function IfcPanel({
     tf: 9.5,
     shape: "I",
   });
+  // aba da viga: "concrete" (dimensões livres) ou "steel" (catálogo de perfis)
+  const [beamKind, setBeamKind] = useState("concrete");
+  const [beamSteelFamily, setBeamSteelFamily] = useState(DEFAULT_STEEL_BEAM_FAMILY);
+  const [beamSteelProfileValue, setBeamSteelProfileValue] = useState(
+    STEEL_BEAM_FAMILIES[DEFAULT_STEEL_BEAM_FAMILY]?.profiles?.[0]?.value ?? ""
+  );
+  const [beamProfileCustom, setBeamProfileCustom] = useState({
+    h: 300,
+    b: 150,
+    tw: 6.3,
+    tf: 9.5,
+    shape: "I",
+  });
+  // qual referência vertical o eixo clicado (linha de grid) representa na
+  // viga: topo, centro (centroide) ou base da seção
+  const [beamAxisRef, setBeamAxisRef] = useState("top");
+  // coluna: o eixo vertical sempre sobe do ponto clicado (sem ambiguidade de
+  // Z); o que muda é por qual ponto da SEÇÃO em planta esse eixo passa
+  const [columnRefX, setColumnRefX] = useState("center");
+  const [columnRefY, setColumnRefY] = useState("center");
+  // idem para a laje: o que o contorno clicado representa na espessura
+  const [slabAxisRef, setSlabAxisRef] = useState("top");
   // ── níveis & grids (datums) ──
   const [levels, setLevels] = useState([]);
   const [activeLevelGuid, setActiveLevelGuid] = useState(null);
@@ -281,30 +265,168 @@ export default function IfcPanel({
 
   useEffect(() => {
     if (elemType !== "column") return;
+
+    // Aba "Concreto": seção retangular livre, sem perfil de catálogo. Os
+    // campos width/depth (m) são editados diretamente pelo usuário no
+    // formulário genérico — aqui só limpamos os campos de perfil metálico.
+    if (columnKind === "concrete") {
+      setForm((f) => ({
+        ...f,
+        profile: null,
+        shape: null,
+        h: null,
+        b: null,
+        tw: null,
+        tf: null,
+      }));
+      return;
+    }
+
+    // Aba "Metálica": perfil personalizado (dimensões em mm digitadas à mão)
+    if (steelFamily === "custom") {
+      setForm((f) => ({
+        ...f,
+        width: columnProfileCustom.b / 1000,
+        depth: columnProfileCustom.h / 1000,
+        profile: "custom",
+        shape: columnProfileCustom.shape,
+        h: columnProfileCustom.h / 1000,
+        b: columnProfileCustom.b / 1000,
+        tw: columnProfileCustom.tw / 1000,
+        tf: columnProfileCustom.tf / 1000,
+      }));
+      return;
+    }
+
+    // Aba "Metálica": perfil de catálogo (HP/W/CVS/CS), dimensões já em metros
+    const family = STEEL_COLUMN_FAMILIES[steelFamily];
     const item =
-      COLUMN_PROFILE_OPTIONS.find((opt) => opt.value === columnProfilePreset) ??
-      COLUMN_PROFILE_OPTIONS[0];
-    const width = item.value === "custom" ? columnProfileCustom.b / 1000 : item.b;
-    const depth = item.value === "custom" ? columnProfileCustom.h / 1000 : item.h;
+      family?.profiles.find((p) => p.value === steelProfileValue) ??
+      family?.profiles[0];
+    if (!item) return;
     setForm((f) => ({
       ...f,
-      width,
-      depth,
+      width: item.b,
+      depth: item.h,
       profile: item.value,
-      shape: item.shape,
-      h: item.value === "custom" ? columnProfileCustom.h / 1000 : item.h,
-      b: item.value === "custom" ? columnProfileCustom.b / 1000 : item.b,
-      tw: item.value === "custom" ? columnProfileCustom.tw / 1000 : item.tw,
-      tf: item.value === "custom" ? columnProfileCustom.tf / 1000 : item.tf,
+      shape: family.shape,
+      h: item.h,
+      b: item.b,
+      tw: item.tw,
+      tf: item.tf,
     }));
   }, [
     elemType,
-    columnProfilePreset,
+    columnKind,
+    steelFamily,
+    steelProfileValue,
     columnProfileCustom.b,
     columnProfileCustom.h,
     columnProfileCustom.tw,
     columnProfileCustom.tf,
+    columnProfileCustom.shape,
   ]);
+
+  // ao trocar de família de perfil metálico, seleciona o primeiro perfil dela
+  useEffect(() => {
+    if (steelFamily === "custom") return;
+    const profiles = STEEL_COLUMN_FAMILIES[steelFamily]?.profiles ?? [];
+    if (!profiles.some((p) => p.value === steelProfileValue)) {
+      setSteelProfileValue(profiles[0]?.value ?? "");
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [steelFamily]);
+
+  useEffect(() => {
+    if (elemType !== "beam") return;
+
+    // Aba "Concreto": seção retangular livre, sem perfil de catálogo.
+    if (beamKind === "concrete") {
+      setForm((f) => ({
+        ...f,
+        profile: null,
+        shape: null,
+        h: null,
+        b: null,
+        tw: null,
+        tf: null,
+      }));
+      return;
+    }
+
+    // Aba "Metálica": perfil personalizado (dimensões em mm digitadas à mão)
+    if (beamSteelFamily === "custom") {
+      setForm((f) => ({
+        ...f,
+        width: beamProfileCustom.b / 1000,
+        depth: beamProfileCustom.h / 1000,
+        profile: "custom",
+        shape: beamProfileCustom.shape,
+        h: beamProfileCustom.h / 1000,
+        b: beamProfileCustom.b / 1000,
+        tw: beamProfileCustom.tw / 1000,
+        tf: beamProfileCustom.tf / 1000,
+      }));
+      return;
+    }
+
+    // Aba "Metálica": perfil de catálogo (HP/W/CVS/VS), dimensões já em metros
+    const family = STEEL_BEAM_FAMILIES[beamSteelFamily];
+    const item =
+      family?.profiles.find((p) => p.value === beamSteelProfileValue) ??
+      family?.profiles[0];
+    if (!item) return;
+    setForm((f) => ({
+      ...f,
+      width: item.b,
+      depth: item.h,
+      profile: item.value,
+      shape: family.shape,
+      h: item.h,
+      b: item.b,
+      tw: item.tw,
+      tf: item.tf,
+    }));
+  }, [
+    elemType,
+    beamKind,
+    beamSteelFamily,
+    beamSteelProfileValue,
+    beamProfileCustom.b,
+    beamProfileCustom.h,
+    beamProfileCustom.tw,
+    beamProfileCustom.tf,
+    beamProfileCustom.shape,
+  ]);
+
+  // ao trocar de família de perfil metálico da viga, seleciona o primeiro perfil dela
+  useEffect(() => {
+    if (beamSteelFamily === "custom") return;
+    const profiles = STEEL_BEAM_FAMILIES[beamSteelFamily]?.profiles ?? [];
+    if (!profiles.some((p) => p.value === beamSteelProfileValue)) {
+      setBeamSteelProfileValue(profiles[0]?.value ?? "");
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [beamSteelFamily]);
+
+  // referência do eixo (topo/centro/base) que o clique na linha de grid
+  // representa na seção da viga — repassada ao form para o beamTool.js usar
+  useEffect(() => {
+    if (elemType !== "beam") return;
+    setForm((f) => ({ ...f, axisRef: beamAxisRef }));
+  }, [elemType, beamAxisRef]);
+
+  // idem para a coluna: por qual ponto da seção em planta o eixo vertical passa
+  useEffect(() => {
+    if (elemType !== "column") return;
+    setForm((f) => ({ ...f, refX: columnRefX, refY: columnRefY }));
+  }, [elemType, columnRefX, columnRefY]);
+
+  // idem para a laje (o que o contorno clicado representa na espessura)
+  useEffect(() => {
+    if (elemType !== "slab") return;
+    setForm((f) => ({ ...f, axisRef: slabAxisRef }));
+  }, [elemType, slabAxisRef]);
 
   useEffect(() => {
     if (!levels.length) {
@@ -768,122 +890,496 @@ export default function IfcPanel({
         )}
         {elemType === "column" && (
           <>
-            <label style={S.fieldWide}>
-              Perfil da Coluna
-              <select
-                style={S.select}
-                value={columnProfilePreset}
-                disabled={Boolean(insertMode)}
-                onChange={(e) => setColumnProfilePreset(e.target.value)}
+            {/* por qual ponto da seção (em planta) passa o eixo vertical da coluna */}
+            <div style={{ ...S.fieldWide, marginBottom: 6 }}>
+              Referência da seção (planta)
+              <div
+                style={{
+                  display: "grid",
+                  gridTemplateColumns: "repeat(3, 22px)",
+                  gridTemplateRows: "repeat(3, 22px)",
+                  gap: 2,
+                  marginTop: 3,
+                }}
               >
-                {COLUMN_PROFILE_OPTIONS.map((opt) => (
-                  <option key={opt.value} value={opt.value}>
-                    {opt.label}
-                  </option>
-                ))}
-              </select>
-            </label>
-            {columnProfilePreset === "custom" && (
-              <div style={{ ...S.fs, marginTop: 4 }}>
-                <div style={{ fontSize: 11, marginBottom: 4, color: "#93c5fd" }}>
-                  Perfil Personalizado
-                </div>
-                <div style={S.row}>
-                  <label style={S.field}>
-                    Altura (h, mm)
-                    <input
-                      style={S.num}
-                      type="number"
-                      step="1"
-                      value={columnProfileCustom.h}
+                {["end", "center", "start"].flatMap((y) =>
+                  ["start", "center", "end"].map((x) => {
+                    const active = columnRefX === x && columnRefY === y;
+                    return (
+                      <button
+                        key={`${x}-${y}`}
+                        type="button"
+                        title={`x=${x}, y=${y}`}
+                        disabled={Boolean(insertMode)}
+                        onClick={() => {
+                          setColumnRefX(x);
+                          setColumnRefY(y);
+                        }}
+                        style={{
+                          width: 22,
+                          height: 22,
+                          padding: 0,
+                          background: active ? "#0e7490" : "#1f2937",
+                          border: active
+                            ? "1px solid #06b6d4"
+                            : "1px solid #4b5563",
+                          borderRadius: 3,
+                          cursor: "pointer",
+                          display: "flex",
+                          alignItems: "center",
+                          justifyContent: "center",
+                        }}
+                      >
+                        <span
+                          style={{
+                            width: 5,
+                            height: 5,
+                            borderRadius: "50%",
+                            background: active ? "#e5e7eb" : "#6b7280",
+                          }}
+                        />
+                      </button>
+                    );
+                  })
+                )}
+              </div>
+              <span style={{ color: "#9ca3af", marginTop: 3 }}>
+                canto/face/centro por onde passa o eixo vertical
+              </span>
+            </div>
+
+            {/* abas: coluna de concreto (dimensões livres) x coluna metálica (catálogo) */}
+            <div style={{ ...S.row, marginBottom: 4 }}>
+              <button
+                type="button"
+                style={{
+                  ...S.btn,
+                  background: columnKind === "concrete" ? "#0e7490" : S.btn.background,
+                  border:
+                    columnKind === "concrete" ? "1px solid #06b6d4" : S.btn.border,
+                }}
+                disabled={Boolean(insertMode)}
+                onClick={() => setColumnKind("concrete")}
+              >
+                Concreto
+              </button>
+              <button
+                type="button"
+                style={{
+                  ...S.btn,
+                  background: columnKind === "steel" ? "#0e7490" : S.btn.background,
+                  border: columnKind === "steel" ? "1px solid #06b6d4" : S.btn.border,
+                }}
+                disabled={Boolean(insertMode)}
+                onClick={() => setColumnKind("steel")}
+              >
+                Metálica
+              </button>
+            </div>
+
+            {columnKind === "steel" && (
+              <>
+                <label style={S.fieldWide}>
+                  Família do perfil
+                  <select
+                    style={S.select}
+                    value={steelFamily}
+                    disabled={Boolean(insertMode)}
+                    onChange={(e) => setSteelFamily(e.target.value)}
+                  >
+                    {STEEL_FAMILY_SELECT_OPTIONS.map((opt) => (
+                      <option key={opt.value} value={opt.value}>
+                        {opt.label}
+                      </option>
+                    ))}
+                  </select>
+                </label>
+
+                {steelFamily !== "custom" && (
+                  <label style={S.fieldWide}>
+                    Perfil
+                    <select
+                      style={S.select}
+                      value={steelProfileValue}
                       disabled={Boolean(insertMode)}
-                      onChange={(e) =>
-                        setColumnProfileCustom((current) => ({
-                          ...current,
-                          h: e.target.value,
-                        }))
-                      }
-                    />
+                      onChange={(e) => setSteelProfileValue(e.target.value)}
+                    >
+                      {(STEEL_COLUMN_FAMILIES[steelFamily]?.profiles ?? []).map(
+                        (p) => (
+                          <option key={p.value} value={p.value}>
+                            {p.value} · {p.weight} kgf/m
+                          </option>
+                        )
+                      )}
+                    </select>
                   </label>
-                  <label style={S.field}>
-                    Largura (b, mm)
-                    <input
-                      style={S.num}
-                      type="number"
-                      step="1"
-                      value={columnProfileCustom.b}
-                      disabled={Boolean(insertMode)}
-                      onChange={(e) =>
-                        setColumnProfileCustom((current) => ({
-                          ...current,
-                          b: e.target.value,
-                        }))
-                      }
-                    />
-                  </label>
-                </div>
-                <div style={S.row}>
-                  <label style={S.field}>
-                    Alma (tw, mm)
-                    <input
-                      style={S.num}
-                      type="number"
-                      step="0.1"
-                      value={columnProfileCustom.tw}
-                      disabled={Boolean(insertMode)}
-                      onChange={(e) =>
-                        setColumnProfileCustom((current) => ({
-                          ...current,
-                          tw: e.target.value,
-                        }))
-                      }
-                    />
-                  </label>
-                  <label style={S.field}>
-                    Mesa (tf, mm)
-                    <input
-                      style={S.num}
-                      type="number"
-                      step="0.1"
-                      value={columnProfileCustom.tf}
-                      disabled={Boolean(insertMode)}
-                      onChange={(e) =>
-                        setColumnProfileCustom((current) => ({
-                          ...current,
-                          tf: e.target.value,
-                        }))
-                      }
-                    />
-                  </label>
-                </div>
-                <div style={{ ...S.fieldWide, marginTop: 2 }}>
-                  Tipo
-                  <div style={{ display: "flex", gap: 8, flexWrap: "wrap", marginTop: 3 }}>
-                    {['I','H','U','L','Tubular Ret.','Tubular Circ.'].map((shape) => (
-                      <label key={shape} style={{ fontSize: 10, display: 'flex', alignItems: 'center', gap: 4 }}>
+                )}
+
+                {steelFamily === "custom" && (
+                  <div style={{ ...S.fs, marginTop: 4 }}>
+                    <div style={{ fontSize: 11, marginBottom: 4, color: "#93c5fd" }}>
+                      Perfil Personalizado
+                    </div>
+                    <div style={S.row}>
+                      <label style={S.field}>
+                        Altura (h, mm)
                         <input
-                          type="radio"
-                          name="column-shape"
-                          value={shape}
-                          checked={columnProfileCustom.shape === shape}
+                          style={S.num}
+                          type="number"
+                          step="1"
+                          value={columnProfileCustom.h}
                           disabled={Boolean(insertMode)}
                           onChange={(e) =>
                             setColumnProfileCustom((current) => ({
                               ...current,
-                              shape: e.target.value,
+                              h: e.target.value,
                             }))
                           }
                         />
-                        {shape}
                       </label>
-                    ))}
+                      <label style={S.field}>
+                        Largura (b, mm)
+                        <input
+                          style={S.num}
+                          type="number"
+                          step="1"
+                          value={columnProfileCustom.b}
+                          disabled={Boolean(insertMode)}
+                          onChange={(e) =>
+                            setColumnProfileCustom((current) => ({
+                              ...current,
+                              b: e.target.value,
+                            }))
+                          }
+                        />
+                      </label>
+                    </div>
+                    <div style={S.row}>
+                      <label style={S.field}>
+                        Alma (tw, mm)
+                        <input
+                          style={S.num}
+                          type="number"
+                          step="0.1"
+                          value={columnProfileCustom.tw}
+                          disabled={Boolean(insertMode)}
+                          onChange={(e) =>
+                            setColumnProfileCustom((current) => ({
+                              ...current,
+                              tw: e.target.value,
+                            }))
+                          }
+                        />
+                      </label>
+                      <label style={S.field}>
+                        Mesa (tf, mm)
+                        <input
+                          style={S.num}
+                          type="number"
+                          step="0.1"
+                          value={columnProfileCustom.tf}
+                          disabled={Boolean(insertMode)}
+                          onChange={(e) =>
+                            setColumnProfileCustom((current) => ({
+                              ...current,
+                              tf: e.target.value,
+                            }))
+                          }
+                        />
+                      </label>
+                    </div>
+                    <div style={{ ...S.fieldWide, marginTop: 2 }}>
+                      Tipo
+                      <div
+                        style={{ display: "flex", gap: 8, flexWrap: "wrap", marginTop: 3 }}
+                      >
+                        {["I", "H", "U", "L", "Tubular Ret.", "Tubular Circ."].map(
+                          (shape) => (
+                            <label
+                              key={shape}
+                              style={{
+                                fontSize: 10,
+                                display: "flex",
+                                alignItems: "center",
+                                gap: 4,
+                              }}
+                            >
+                              <input
+                                type="radio"
+                                name="column-shape"
+                                value={shape}
+                                checked={columnProfileCustom.shape === shape}
+                                disabled={Boolean(insertMode)}
+                                onChange={(e) =>
+                                  setColumnProfileCustom((current) => ({
+                                    ...current,
+                                    shape: e.target.value,
+                                  }))
+                                }
+                              />
+                              {shape}
+                            </label>
+                          )
+                        )}
+                      </div>
+                    </div>
                   </div>
-                </div>
-              </div>
+                )}
+              </>
             )}
           </>
         )}
-        {!(elemType === "column" && columnProfilePreset !== "custom") && (
+        {elemType === "beam" && (
+          <>
+            {/* referência do eixo clicado na linha de grid: o que ele representa na seção */}
+            <div style={{ ...S.fieldWide, marginBottom: 6 }}>
+              Eixo de referência
+              <div style={{ display: "flex", gap: 8, flexWrap: "wrap", marginTop: 3 }}>
+                {[
+                  { value: "top", label: "Superior" },
+                  { value: "center", label: "Central" },
+                  { value: "bottom", label: "Inferior" },
+                ].map((opt) => (
+                  <label
+                    key={opt.value}
+                    style={{
+                      fontSize: 10,
+                      display: "flex",
+                      alignItems: "center",
+                      gap: 4,
+                    }}
+                  >
+                    <input
+                      type="radio"
+                      name="beam-axis-ref"
+                      value={opt.value}
+                      checked={beamAxisRef === opt.value}
+                      disabled={Boolean(insertMode)}
+                      onChange={(e) => setBeamAxisRef(e.target.value)}
+                    />
+                    {opt.label}
+                  </label>
+                ))}
+              </div>
+            </div>
+
+            {/* abas: viga de concreto (dimensões livres) x viga metálica (catálogo) */}
+            <div style={{ ...S.row, marginBottom: 4 }}>
+              <button
+                type="button"
+                style={{
+                  ...S.btn,
+                  background: beamKind === "concrete" ? "#0e7490" : S.btn.background,
+                  border:
+                    beamKind === "concrete" ? "1px solid #06b6d4" : S.btn.border,
+                }}
+                disabled={Boolean(insertMode)}
+                onClick={() => setBeamKind("concrete")}
+              >
+                Concreto
+              </button>
+              <button
+                type="button"
+                style={{
+                  ...S.btn,
+                  background: beamKind === "steel" ? "#0e7490" : S.btn.background,
+                  border: beamKind === "steel" ? "1px solid #06b6d4" : S.btn.border,
+                }}
+                disabled={Boolean(insertMode)}
+                onClick={() => setBeamKind("steel")}
+              >
+                Metálica
+              </button>
+            </div>
+
+            {beamKind === "steel" && (
+              <>
+                <label style={S.fieldWide}>
+                  Família do perfil
+                  <select
+                    style={S.select}
+                    value={beamSteelFamily}
+                    disabled={Boolean(insertMode)}
+                    onChange={(e) => setBeamSteelFamily(e.target.value)}
+                  >
+                    {STEEL_BEAM_FAMILY_SELECT_OPTIONS.map((opt) => (
+                      <option key={opt.value} value={opt.value}>
+                        {opt.label}
+                      </option>
+                    ))}
+                  </select>
+                </label>
+
+                {beamSteelFamily !== "custom" && (
+                  <label style={S.fieldWide}>
+                    Perfil
+                    <select
+                      style={S.select}
+                      value={beamSteelProfileValue}
+                      disabled={Boolean(insertMode)}
+                      onChange={(e) => setBeamSteelProfileValue(e.target.value)}
+                    >
+                      {(STEEL_BEAM_FAMILIES[beamSteelFamily]?.profiles ?? []).map(
+                        (p) => (
+                          <option key={p.value} value={p.value}>
+                            {p.value} · {p.weight} kgf/m
+                          </option>
+                        )
+                      )}
+                    </select>
+                  </label>
+                )}
+
+                {beamSteelFamily === "custom" && (
+                  <div style={{ ...S.fs, marginTop: 4 }}>
+                    <div style={{ fontSize: 11, marginBottom: 4, color: "#93c5fd" }}>
+                      Perfil Personalizado
+                    </div>
+                    <div style={S.row}>
+                      <label style={S.field}>
+                        Altura (h, mm)
+                        <input
+                          style={S.num}
+                          type="number"
+                          step="1"
+                          value={beamProfileCustom.h}
+                          disabled={Boolean(insertMode)}
+                          onChange={(e) =>
+                            setBeamProfileCustom((current) => ({
+                              ...current,
+                              h: e.target.value,
+                            }))
+                          }
+                        />
+                      </label>
+                      <label style={S.field}>
+                        Largura (b, mm)
+                        <input
+                          style={S.num}
+                          type="number"
+                          step="1"
+                          value={beamProfileCustom.b}
+                          disabled={Boolean(insertMode)}
+                          onChange={(e) =>
+                            setBeamProfileCustom((current) => ({
+                              ...current,
+                              b: e.target.value,
+                            }))
+                          }
+                        />
+                      </label>
+                    </div>
+                    <div style={S.row}>
+                      <label style={S.field}>
+                        Alma (tw, mm)
+                        <input
+                          style={S.num}
+                          type="number"
+                          step="0.1"
+                          value={beamProfileCustom.tw}
+                          disabled={Boolean(insertMode)}
+                          onChange={(e) =>
+                            setBeamProfileCustom((current) => ({
+                              ...current,
+                              tw: e.target.value,
+                            }))
+                          }
+                        />
+                      </label>
+                      <label style={S.field}>
+                        Mesa (tf, mm)
+                        <input
+                          style={S.num}
+                          type="number"
+                          step="0.1"
+                          value={beamProfileCustom.tf}
+                          disabled={Boolean(insertMode)}
+                          onChange={(e) =>
+                            setBeamProfileCustom((current) => ({
+                              ...current,
+                              tf: e.target.value,
+                            }))
+                          }
+                        />
+                      </label>
+                    </div>
+                    <div style={{ ...S.fieldWide, marginTop: 2 }}>
+                      Tipo
+                      <div
+                        style={{ display: "flex", gap: 8, flexWrap: "wrap", marginTop: 3 }}
+                      >
+                        {["I", "H", "U", "L", "Tubular Ret.", "Tubular Circ."].map(
+                          (shape) => (
+                            <label
+                              key={shape}
+                              style={{
+                                fontSize: 10,
+                                display: "flex",
+                                alignItems: "center",
+                                gap: 4,
+                              }}
+                            >
+                              <input
+                                type="radio"
+                                name="beam-shape"
+                                value={shape}
+                                checked={beamProfileCustom.shape === shape}
+                                disabled={Boolean(insertMode)}
+                                onChange={(e) =>
+                                  setBeamProfileCustom((current) => ({
+                                    ...current,
+                                    shape: e.target.value,
+                                  }))
+                                }
+                              />
+                              {shape}
+                            </label>
+                          )
+                        )}
+                      </div>
+                    </div>
+                  </div>
+                )}
+              </>
+            )}
+          </>
+        )}
+        {elemType === "slab" && (
+          <div style={{ ...S.fieldWide, marginBottom: 6 }}>
+            Eixo de referência
+            <div style={{ display: "flex", gap: 8, flexWrap: "wrap", marginTop: 3 }}>
+              {[
+                { value: "top", label: "Superior" },
+                { value: "center", label: "Central" },
+                { value: "bottom", label: "Inferior" },
+              ].map((opt) => (
+                <label
+                  key={opt.value}
+                  style={{
+                    fontSize: 10,
+                    display: "flex",
+                    alignItems: "center",
+                    gap: 4,
+                  }}
+                >
+                  <input
+                    type="radio"
+                    name="slab-axis-ref"
+                    value={opt.value}
+                    checked={slabAxisRef === opt.value}
+                    disabled={Boolean(insertMode)}
+                    onChange={(e) => setSlabAxisRef(e.target.value)}
+                  />
+                  {opt.label}
+                </label>
+              ))}
+            </div>
+          </div>
+        )}
+        {!(
+          (elemType === "column" && columnKind === "steel") ||
+          (elemType === "beam" && beamKind === "steel")
+        ) && (
           <div style={S.row}>
             {ELEMENT_FORMS[elemType].fields.map((k) => (
               <label key={k} style={S.field}>
