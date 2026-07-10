@@ -26,11 +26,78 @@ import { INSERTION_TOOLS } from "../ifc/tools/index.js";
 // dirigidos pelo registro de ferramentas (cada uma carrega label/fields/defaults).
 const ELEMENT_FORMS = INSERTION_TOOLS;
 
+const COLUMN_PROFILE_OPTIONS = [
+  {
+    value: "W200x15",
+    label: "W200x15",
+    shape: "H",
+    h: 0.203,
+    b: 0.102,
+    tw: 0.0058,
+    tf: 0.0084,
+  },
+  {
+    value: "W250x25",
+    label: "W250x25",
+    shape: "H",
+    h: 0.257,
+    b: 0.146,
+    tw: 0.0061,
+    tf: 0.0086,
+  },
+  {
+    value: "IPE200",
+    label: "IPE 200",
+    shape: "I",
+    h: 0.200,
+    b: 0.100,
+    tw: 0.0058,
+    tf: 0.0084,
+  },
+  {
+    value: "IPE300",
+    label: "IPE 300",
+    shape: "I",
+    h: 0.300,
+    b: 0.150,
+    tw: 0.0069,
+    tf: 0.0102,
+  },
+  {
+    value: "HEA200",
+    label: "HEA 200",
+    shape: "H",
+    h: 0.200,
+    b: 0.194,
+    tw: 0.0065,
+    tf: 0.0107,
+  },
+  {
+    value: "HEB200",
+    label: "HEB 200",
+    shape: "H",
+    h: 0.200,
+    b: 0.200,
+    tw: 0.0064,
+    tf: 0.0102,
+  },
+  {
+    value: "custom",
+    label: "Personalizado...",
+    shape: "I",
+    h: 0.300,
+    b: 0.150,
+    tw: 0.0063,
+    tf: 0.0095,
+  },
+];
+
 export default function IfcPanel({
   canvasRef,
   onClose,
   translationSnap = 0,
   rotationSnap = 0,
+  workPlaneControls = true,
 }) {
   const [modelId, setModelId] = useState(null);
   const [summary, setSummary] = useState(null);
@@ -44,6 +111,16 @@ export default function IfcPanel({
   const [dims, setDims] = useState({ length: 5, height: 3, thickness: 0.2 });
   const [rename, setRename] = useState("");
   const [insertMode, setInsertMode] = useState(null);
+  const [columnProfilePreset, setColumnProfilePreset] = useState(
+    COLUMN_PROFILE_OPTIONS[0].value
+  );
+  const [columnProfileCustom, setColumnProfileCustom] = useState({
+    h: 300,
+    b: 150,
+    tw: 6.3,
+    tf: 9.5,
+    shape: "I",
+  });
   // ── níveis & grids (datums) ──
   const [levels, setLevels] = useState([]);
   const [activeLevelGuid, setActiveLevelGuid] = useState(null);
@@ -124,6 +201,7 @@ export default function IfcPanel({
     });
     transform.setTranslationSnap(translationSnap);
     transform.setRotationSnap(rotationSnap);
+    transform.setEnabled(workPlaneControls);
     transformRef.current = transform;
 
     // controller de inserção: dono dos eventos de criar geometria (tools)
@@ -192,10 +270,41 @@ export default function IfcPanel({
     transformRef.current?.setRotationSnap(rotationSnap);
   }, [rotationSnap]);
 
+  useEffect(() => {
+    transformRef.current?.setEnabled(workPlaneControls);
+  }, [workPlaneControls]);
+
   // ao trocar o tipo, recarrega os valores padrão daquele elemento
   useEffect(() => {
     setForm({ ...ELEMENT_FORMS[elemType].defaults });
   }, [elemType]);
+
+  useEffect(() => {
+    if (elemType !== "column") return;
+    const item =
+      COLUMN_PROFILE_OPTIONS.find((opt) => opt.value === columnProfilePreset) ??
+      COLUMN_PROFILE_OPTIONS[0];
+    const width = item.value === "custom" ? columnProfileCustom.b / 1000 : item.b;
+    const depth = item.value === "custom" ? columnProfileCustom.h / 1000 : item.h;
+    setForm((f) => ({
+      ...f,
+      width,
+      depth,
+      profile: item.value,
+      shape: item.shape,
+      h: item.value === "custom" ? columnProfileCustom.h / 1000 : item.h,
+      b: item.value === "custom" ? columnProfileCustom.b / 1000 : item.b,
+      tw: item.value === "custom" ? columnProfileCustom.tw / 1000 : item.tw,
+      tf: item.value === "custom" ? columnProfileCustom.tf / 1000 : item.tf,
+    }));
+  }, [
+    elemType,
+    columnProfilePreset,
+    columnProfileCustom.b,
+    columnProfileCustom.h,
+    columnProfileCustom.tw,
+    columnProfileCustom.tf,
+  ]);
 
   useEffect(() => {
     if (!levels.length) {
@@ -657,23 +766,142 @@ export default function IfcPanel({
             </select>
           </label>
         )}
-        <div style={S.row}>
-          {ELEMENT_FORMS[elemType].fields.map((k) => (
-            <label key={k} style={S.field}>
-              {k}
-              <input
-                style={S.num}
-                type="number"
-                step="0.1"
-                value={form[k] ?? ""}
+        {elemType === "column" && (
+          <>
+            <label style={S.fieldWide}>
+              Perfil da Coluna
+              <select
+                style={S.select}
+                value={columnProfilePreset}
                 disabled={Boolean(insertMode)}
-                onChange={(e) =>
-                  setForm((f) => ({ ...f, [k]: e.target.value }))
-                }
-              />
+                onChange={(e) => setColumnProfilePreset(e.target.value)}
+              >
+                {COLUMN_PROFILE_OPTIONS.map((opt) => (
+                  <option key={opt.value} value={opt.value}>
+                    {opt.label}
+                  </option>
+                ))}
+              </select>
             </label>
-          ))}
-        </div>
+            {columnProfilePreset === "custom" && (
+              <div style={{ ...S.fs, marginTop: 4 }}>
+                <div style={{ fontSize: 11, marginBottom: 4, color: "#93c5fd" }}>
+                  Perfil Personalizado
+                </div>
+                <div style={S.row}>
+                  <label style={S.field}>
+                    Altura (h, mm)
+                    <input
+                      style={S.num}
+                      type="number"
+                      step="1"
+                      value={columnProfileCustom.h}
+                      disabled={Boolean(insertMode)}
+                      onChange={(e) =>
+                        setColumnProfileCustom((current) => ({
+                          ...current,
+                          h: e.target.value,
+                        }))
+                      }
+                    />
+                  </label>
+                  <label style={S.field}>
+                    Largura (b, mm)
+                    <input
+                      style={S.num}
+                      type="number"
+                      step="1"
+                      value={columnProfileCustom.b}
+                      disabled={Boolean(insertMode)}
+                      onChange={(e) =>
+                        setColumnProfileCustom((current) => ({
+                          ...current,
+                          b: e.target.value,
+                        }))
+                      }
+                    />
+                  </label>
+                </div>
+                <div style={S.row}>
+                  <label style={S.field}>
+                    Alma (tw, mm)
+                    <input
+                      style={S.num}
+                      type="number"
+                      step="0.1"
+                      value={columnProfileCustom.tw}
+                      disabled={Boolean(insertMode)}
+                      onChange={(e) =>
+                        setColumnProfileCustom((current) => ({
+                          ...current,
+                          tw: e.target.value,
+                        }))
+                      }
+                    />
+                  </label>
+                  <label style={S.field}>
+                    Mesa (tf, mm)
+                    <input
+                      style={S.num}
+                      type="number"
+                      step="0.1"
+                      value={columnProfileCustom.tf}
+                      disabled={Boolean(insertMode)}
+                      onChange={(e) =>
+                        setColumnProfileCustom((current) => ({
+                          ...current,
+                          tf: e.target.value,
+                        }))
+                      }
+                    />
+                  </label>
+                </div>
+                <div style={{ ...S.fieldWide, marginTop: 2 }}>
+                  Tipo
+                  <div style={{ display: "flex", gap: 8, flexWrap: "wrap", marginTop: 3 }}>
+                    {['I','H','U','L','Tubular Ret.','Tubular Circ.'].map((shape) => (
+                      <label key={shape} style={{ fontSize: 10, display: 'flex', alignItems: 'center', gap: 4 }}>
+                        <input
+                          type="radio"
+                          name="column-shape"
+                          value={shape}
+                          checked={columnProfileCustom.shape === shape}
+                          disabled={Boolean(insertMode)}
+                          onChange={(e) =>
+                            setColumnProfileCustom((current) => ({
+                              ...current,
+                              shape: e.target.value,
+                            }))
+                          }
+                        />
+                        {shape}
+                      </label>
+                    ))}
+                  </div>
+                </div>
+              </div>
+            )}
+          </>
+        )}
+        {!(elemType === "column" && columnProfilePreset !== "custom") && (
+          <div style={S.row}>
+            {ELEMENT_FORMS[elemType].fields.map((k) => (
+              <label key={k} style={S.field}>
+                {k}
+                <input
+                  style={S.num}
+                  type="number"
+                  step="0.1"
+                  value={form[k] ?? ""}
+                  disabled={Boolean(insertMode)}
+                  onChange={(e) =>
+                    setForm((f) => ({ ...f, [k]: e.target.value }))
+                  }
+                />
+              </label>
+            ))}
+          </div>
+        )}
         <button
           style={{
             ...S.btn,

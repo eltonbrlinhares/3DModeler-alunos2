@@ -81,6 +81,13 @@ export class TransformController {
     this._activeKind = null;
   }
 
+  setEnabled(enabled) {
+    this.translate.enabled = enabled;
+    this.rotate.enabled = enabled;
+    this.translate.getHelper().visible = enabled;
+    this.rotate.getHelper().visible = enabled;
+  }
+
   dispose() {
     this.translate.removeEventListener(
       "dragging-changed",

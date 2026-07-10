@@ -68,6 +68,12 @@ def create_column(req: CreateColumnRequest, entry: ModelEntry = Depends(get_entr
             position=tuple(req.position),
             rotation_z=req.rotation_z,
             storey_guid=req.storey_guid,
+            profile=req.profile,
+            shape=req.shape,
+            h=req.h,
+            b=req.b,
+            tw=req.tw,
+            tf=req.tf,
         )
     except RuntimeError as e:
         raise HTTPException(400, f"falha ao criar coluna: {e}")

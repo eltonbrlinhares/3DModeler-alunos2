@@ -44,7 +44,7 @@ const valueStyle = { cursor: "text", color: "#ddd" };
  * @param {number}   props.value    - Valor atual do eixo no pivot
  * @param {function} props.onCommit - Chamado com o novo valor ao confirmar
  */
-function AxisField({ axis, value, onCommit }) {
+function AxisField({ axis, value, onCommit, disabled }) {
   // `draft` é null quando não está editando, ou a string digitada enquanto edita
   const [draft, setDraft] = useState(null);
   const isEditing = draft !== null;
@@ -62,6 +62,7 @@ function AxisField({ axis, value, onCommit }) {
       {isEditing ? (
         <input
           autoFocus
+          disabled={disabled}
           value={draft}
           onChange={(e) => setDraft(e.target.value)}
           onKeyDown={(e) => {
@@ -69,13 +70,13 @@ function AxisField({ axis, value, onCommit }) {
             if (e.key === "Escape") setDraft(null); // cancela sem confirmar
           }}
           onBlur={() => setDraft(null)} // cancela ao perder o foco
-          style={{ ...inputStyle, width: 52 }}
+          style={{ ...inputStyle, width: 52, opacity: disabled ? 0.6 : 1 }}
         />
       ) : (
         <span
-          onClick={() => setDraft(value.toFixed(3))} // preenche o draft com o valor atual
-          title="Clique para editar"
-          style={valueStyle}
+          onClick={() => !disabled && setDraft(value.toFixed(3))} // preenche o draft com o valor atual
+          title={disabled ? "Plano travado" : "Clique para editar"}
+          style={{ ...valueStyle, cursor: disabled ? "not-allowed" : valueStyle.cursor }}
         >
           {value.toFixed(3)}
         </span>
@@ -144,18 +145,20 @@ function StepField({ label, value, unit, onCommit }) {
  * @param {boolean}  props.active  - Se true, usa estilo "ativo" (verde)
  * @param {function} props.onClick - Callback ao clicar
  */
-function ToggleBtn({ label, active, onClick }) {
+function ToggleBtn({ label, active, onClick, disabled, title }) {
   return (
     <button
-      onClick={onClick}
+      onClick={disabled ? undefined : onClick}
+      disabled={disabled}
+      title={title}
       style={{
-        background: active ? "#2a4a2a" : "#2a2a2a",
-        color: active ? "#8f8" : "#666",
-        border: `1px solid ${active ? "#4a7a4a" : "#444"}`,
+        background: disabled ? "#1a1a1a" : active ? "#2a4a2a" : "#2a2a2a",
+        color: disabled ? "#444" : active ? "#8f8" : "#666",
+        border: `1px solid ${disabled ? "#222" : active ? "#4a7a4a" : "#444"}`,
         fontFamily: "monospace",
         fontSize: "0.75rem",
         padding: "1px 7px",
-        cursor: "pointer",
+        cursor: disabled ? "not-allowed" : "pointer",
         borderRadius: 3,
         userSelect: "none",
       }}
@@ -189,6 +192,8 @@ const sep = <span style={{ color: "#555" }}>|</span>;
  * @param {function} props.onGridSizeChange
  * @param {string}   props.activePlane           - Plano ativo: "XY" | "XZ" | "YZ"
  * @param {function} props.onPlaneChange
+ * @param {boolean}  props.workPlaneControls      - Se os controles do plano de trabalho estão habilitados
+ * @param {function} props.onWorkPlaneControlsToggle - Alterna o estado dos controles do plano de trabalho
  */
 export default function CoordsDisplay({
   coords,
@@ -232,7 +237,9 @@ export default function CoordsDisplay({
           key={p}
           label={p}
           active={activePlane === p}
+          disabled={!workPlaneControls}
           onClick={() => onPlaneChange(p)}
+          title={workPlaneControls ? `Mudar para o plano ${p}` : 'Plano travado'}
         />
       ))}
 
@@ -240,9 +247,10 @@ export default function CoordsDisplay({
 
       {/* Toggle dos controles do plano de trabalho */}
       <ToggleBtn
-        label="Controls"
+        label={workPlaneControls ? "Plano Livre" : "Plano Travado"}
         active={workPlaneControls}
         onClick={onWorkPlaneControlsToggle}
+        title={workPlaneControls ? "Clique para travar o plano de trabalho" : "Clique para liberar o plano de trabalho"}
       />
 
       {sep}
@@ -274,8 +282,7 @@ export default function CoordsDisplay({
         <AxisField
           key={axis}
           axis={axis}
-          value={center[axis]}
-          onCommit={(val) => onCenterSet({ ...center, [axis]: val })}
+          value={center[axis]}          disabled={!workPlaneControls}          onCommit={(val) => onCenterSet({ ...center, [axis]: val })}
         />
       ))}
 

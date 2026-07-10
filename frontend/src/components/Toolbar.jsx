@@ -50,6 +50,7 @@ export default function Toolbar({
   onOpenMesh,
   onExport,
   onImport,
+  onToggleView,
 }) {
   const surfaceEnabled = selectedCurveCount >= 2;
   const subdivEnabled = selectedCurveCount >= 1;
@@ -177,7 +178,11 @@ export default function Toolbar({
       {/* Botão de toggle do Editor de Volume 3D (OCCT) */}
       <button
         title="Editor de Volume 3D (OCCT)"
-        onClick={onVolumeToggle}
+        onClick={() => {
+          onVolumeToggle();
+          // toggle view to 3d when opening volume editor
+          onToggleView?.('3d');
+        }}
         style={{
           width: 44,
           height: 44,
@@ -194,6 +199,24 @@ export default function Toolbar({
       >
         3D
       </button>
+
+      {/* Botões de troca de vista: Planta / 3D */}
+      <div style={{ display: 'flex', gap: 4, marginTop: 6 }}>
+        <button
+          title="Vista Planta (Ortográfica Z)"
+          onClick={() => onToggleView?.('plan')}
+          style={{ width: 44, height: 36, background: '#111', color: '#fff', borderRadius: 4 }}
+        >
+          PL
+        </button>
+        <button
+          title="Vista 3D (Perspectiva)"
+          onClick={() => onToggleView?.('3d')}
+          style={{ width: 44, height: 36, background: '#111', color: '#fff', borderRadius: 4 }}
+        >
+          3D
+        </button>
+      </div>
 
       {/* Separador visual */}
       <div style={{ height: 1, background: "#444", margin: "4px 0" }} />

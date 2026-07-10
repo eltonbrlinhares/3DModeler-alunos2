@@ -85,6 +85,12 @@ class CreateSlabRequest(BaseModel):
 
 class CreateColumnRequest(BaseModel):
     name: str | None = None
+    profile: str | None = None
+    shape: str | None = None
+    h: float | None = Field(default=None, gt=0)
+    b: float | None = Field(default=None, gt=0)
+    tw: float | None = Field(default=None, gt=0)
+    tf: float | None = Field(default=None, gt=0)
     width: float = Field(default=0.4, gt=0)
     depth: float = Field(default=0.4, gt=0)
     height: float = Field(default=3.0, gt=0)

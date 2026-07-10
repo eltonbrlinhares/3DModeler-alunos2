@@ -15,15 +15,15 @@ Backend em Python para edicao de modelos IFC usando FastAPI e IfcOpenShell. A AP
 
 ```powershell
 cd backend
-python -m venv .venv
-.\.venv\Scripts\Activate.ps1
+
 pip install -r requirements.txt
 uvicorn app.main:app --reload --host 127.0.0.1 --port 8000
 ```
 
 URLs uteis:
 
-- Health: `http://localhost:8000/health`
+- Health: `http://localhopython -m venv .venv
+.\.venv\Scripts\Activate.ps1st:8000/health`
 - Swagger/OpenAPI: `http://localhost:8000/docs`
 
 O CORS esta liberado para qualquer porta de `localhost` e `127.0.0.1`, para funcionar com Vite em `5173`, `5174` etc.

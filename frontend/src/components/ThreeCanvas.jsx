@@ -105,6 +105,7 @@ const ThreeCanvas = forwardRef(function ThreeCanvas(
   const onSelectionCountChangeRef   = useRef(onSelectionCountChange);
   const exportModelRef  = useRef(null);
   const importModelRef  = useRef(null);
+  const switchViewRef = useRef((v) => {});
 
   // Mantém callbacks sempre atualizados sem re-executar o useEffect pesado
   useEffect(() => { onSketchCommitRef.current = onSketchCommit; }, [onSketchCommit]);
@@ -114,6 +115,7 @@ const ThreeCanvas = forwardRef(function ThreeCanvas(
   // ── API Imperativa ─────────────────────────────────────────────────────────
   useImperativeHandle(ref, () => ({
     setCenter(x, y, z) {
+      if (!workPlaneVisibleRef.current) return;
       if (pivotRef.current) pivotRef.current.position.set(x, y, z);
     },
     setTranslationSnap(value) {
@@ -126,7 +128,7 @@ const ThreeCanvas = forwardRef(function ThreeCanvas(
     },
     setGridVisible(visible) {
       if (gridVisualRef.current) gridVisualRef.current.visible = visible;
-      cornerHandlesRef.current.forEach((h) => { h.visible = visible; });
+      cornerHandlesRef.current.forEach((h) => { h.visible = visible && workPlaneVisibleRef.current; });
     },
     setGridSize(spacing) {
       spacingRef.current = Math.max(0.01, spacing);
@@ -136,7 +138,7 @@ const ThreeCanvas = forwardRef(function ThreeCanvas(
       gridSnapRef.current = enabled;
     },
     setPlane(planeName) {
-      if (!pivotRef.current) return;
+      if (!workPlaneVisibleRef.current || !pivotRef.current) return;
       const r = {
         XZ: [0, 0, 0],
         XY: [Math.PI / 2, 0, 0],
@@ -152,6 +154,13 @@ const ThreeCanvas = forwardRef(function ThreeCanvas(
       const tc = transformControlsRef.current;
       if (tc) {
         const allow = !isDrawing && workPlaneVisibleRef.current;
+        if (allow && pivotRef.current) {
+          tc.translate.attach(pivotRef.current);
+          tc.rotate.attach(pivotRef.current);
+        } else {
+          tc.translate.detach();
+          tc.rotate.detach();
+        }
         tc.translate.enabled = allow;
         tc.rotate.enabled = allow;
       }
@@ -162,13 +171,27 @@ const ThreeCanvas = forwardRef(function ThreeCanvas(
     setWorkPlaneControls(visible) {
       workPlaneVisibleRef.current = visible;
       const tc = transformControlsRef.current;
-      if (!tc) return;
-      const isDrawing = activeToolRef.current !== "select";
-      const allow = visible && !isDrawing;
-      tc.translate.enabled = allow;
-      tc.rotate.enabled = allow;
-      tc.translate.getHelper().visible = visible;
-      tc.rotate.getHelper().visible = visible;
+      if (tc) {
+        const isDrawing = activeToolRef.current !== "select";
+        const allow = visible && !isDrawing;
+        if (allow && pivotRef.current) {
+          tc.translate.attach(pivotRef.current);
+          tc.rotate.attach(pivotRef.current);
+        } else {
+          tc.translate.detach();
+          tc.rotate.detach();
+        }
+        tc.translate.enabled = allow;
+        tc.rotate.enabled = allow;
+        tc.translate.getHelper().visible = visible;
+        tc.rotate.getHelper().visible = visible;
+      }
+      cornerHandlesRef.current.forEach((h) => {
+        h.visible = visible && gridVisualRef.current?.visible !== false;
+      });
+    },
+    setView(view) {
+      switchViewRef.current?.(view);
     },
     applySubdivisions(n, ratio) {
       applySubdivRef.current?.(n, ratio);
@@ -201,8 +224,12 @@ const ThreeCanvas = forwardRef(function ThreeCanvas(
     container.style.position = "relative";
 
     // ── Cena, câmera e renderers ─────────────────────────────────────────────
-    const { scene, camera, renderer, labelRenderer, bgTexture } =
-      setupRenderers(container);
+    const renderSetup = setupRenderers(container);
+    let camera = renderSetup.camera; // will be swapped between perspective/ortho
+    const scene = renderSetup.scene;
+    const renderer = renderSetup.renderer;
+    const labelRenderer = renderSetup.labelRenderer;
+    const bgTexture = renderSetup.bgTexture;
     sceneInternalRef.current = scene;
     cameraRef.current = camera;
 
@@ -236,11 +263,42 @@ const ThreeCanvas = forwardRef(function ThreeCanvas(
     };
     rebuildGridRef.current = rebuildGrid;
 
-    // ── OrbitControls + TransformControls ────────────────────────────────────
-    const { orbitControls, translateControls, rotateControls } =
-      setupControls(scene, camera, renderer.domElement, pivot, onCenterChange);
+    // ── OrbitControls + TransformControls for perspective view ──────────────
+    let orbitControls, translateControls, rotateControls;
+    const perspControls = setupControls(scene, camera, renderer.domElement, pivot, onCenterChange);
+    orbitControls = perspControls.orbitControls;
+    translateControls = perspControls.translateControls;
+    rotateControls = perspControls.rotateControls;
     orbitControlsRef.current = orbitControls;
     transformControlsRef.current = { translate: translateControls, rotate: rotateControls };
+
+    // ── Create orthographic camera + controls for Plan view (top-down)
+    const w = container.clientWidth;
+    const h = container.clientHeight;
+    const aspect = w / h;
+    const frustumSize = Math.max(10, gridHalfSizeRef.current * 2);
+    const orthoCamera = new THREE.OrthographicCamera(
+      -frustumSize * aspect / 2,
+      frustumSize * aspect / 2,
+      frustumSize / 2,
+      -frustumSize / 2,
+      0.1,
+      1000,
+    );
+    orthoCamera.up.set(0, 0, 1);
+    orthoCamera.position.set(0, 0, 20);
+    orthoCamera.lookAt(0, 0, 0);
+
+    const orthoControlsSet = setupControls(scene, orthoCamera, renderer.domElement, pivot, onCenterChange);
+    const orthoOrbitControls = orthoControlsSet.orbitControls;
+    const orthoTranslateControls = orthoControlsSet.translateControls;
+    const orthoRotateControls = orthoControlsSet.rotateControls;
+
+    // keep references
+    orbitControlsRef.current = orbitControls;
+    // store ortho set on ref for switching
+    orbitControlsRef.perspective = { orbit: orbitControls, translate: translateControls, rotate: rotateControls };
+    orbitControlsRef.ortho = { orbit: orthoOrbitControls, translate: orthoTranslateControls, rotate: orthoRotateControls };
 
     // ── Helpers de raycasting ─────────────────────────────────────────────────
     const getNDC = (clientX, clientY) => {
@@ -277,6 +335,50 @@ const ThreeCanvas = forwardRef(function ThreeCanvas(
       local.z = Math.round(local.z / s) * s;
       return pivot.localToWorld(local);
     };
+
+    // Active view state: '3d' or 'plan'
+    let activeView = '3d';
+
+    const switchToView = (view) => {
+      if (view === activeView) return;
+      activeView = view;
+      if (view === 'plan') {
+        // switch to ortho camera
+        camera = orthoCamera;
+        cameraRef.current = camera;
+        // disable perspective controls, enable ortho controls
+        const p = orbitControlsRef.perspective;
+        const o = orbitControlsRef.ortho;
+        if (p) {
+          p.orbit.enabled = false;
+          p.translate.enabled = false;
+          p.rotate.enabled = false;
+        }
+        if (o) {
+          o.orbit.enabled = true;
+          o.translate.enabled = true;
+          o.rotate.enabled = true;
+        }
+      } else {
+        // switch to perspective
+        camera = renderSetup.camera;
+        cameraRef.current = camera;
+        const p = orbitControlsRef.perspective;
+        const o = orbitControlsRef.ortho;
+        if (o) {
+          o.orbit.enabled = false;
+          o.translate.enabled = false;
+          o.rotate.enabled = false;
+        }
+        if (p) {
+          p.orbit.enabled = true;
+          p.translate.enabled = true;
+          p.rotate.enabled = true;
+        }
+      }
+    };
+    // expose switch function to outside via ref
+    switchViewRef.current = switchToView;
 
     const findEndpointSnapTarget = (
       clientX, clientY, worldPt,
@@ -796,10 +898,12 @@ const ThreeCanvas = forwardRef(function ThreeCanvas(
       raycaster.setFromCamera(ndc, camera);
       const hits = raycaster.intersectObjects(cornerHandlesRef.current);
       if (hits.length > 0) {
-        isResizingRef.current = true;
-        orbitControls.enabled = false;
-        translateControls.enabled = false;
-        rotateControls.enabled = false;
+        if (workPlaneVisibleRef.current) {
+          isResizingRef.current = true;
+          orbitControls.enabled = false;
+          translateControls.enabled = false;
+          rotateControls.enabled = false;
+        }
         return;
       }
 
@@ -885,8 +989,9 @@ const ThreeCanvas = forwardRef(function ThreeCanvas(
       orbitControls.enabled = true;
       const isDrawing = activeToolRef.current !== "select";
       if (!isDrawing) {
-        translateControls.enabled = true;
-        rotateControls.enabled = true;
+        const allow = workPlaneVisibleRef.current;
+        translateControls.enabled = allow;
+        rotateControls.enabled = allow;
       }
     };
 
@@ -916,7 +1021,11 @@ const ThreeCanvas = forwardRef(function ThreeCanvas(
         clearSelection();
         activeToolRef.current = "select";
         const tc = transformControlsRef.current;
-        if (tc) { tc.translate.enabled = true; tc.rotate.enabled = true; }
+        if (tc) {
+          const allow = workPlaneVisibleRef.current;
+          tc.translate.enabled = allow;
+          tc.rotate.enabled = allow;
+        }
         onToolChangeRef.current?.("select");
         return;
       }

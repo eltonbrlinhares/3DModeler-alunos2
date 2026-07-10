@@ -331,6 +331,8 @@ export default function ThreeGrid() {
           onOpenMesh={handleOpenMeshPanel}
           onExport={handleExport}
           onImport={handleImport}
+          // view toggle handler: call ThreeCanvas.setView('plan'|'3d')
+          onToggleView={(v) => canvasRef.current?.setView?.(v)}
         />
 
         {/* Diálogo de subdivisão de curvas */}
@@ -397,6 +399,7 @@ export default function ThreeGrid() {
             onClose={() => setIfcOpen(false)}
             translationSnap={translationSnap}
             rotationSnap={rotationSnap}
+            workPlaneControls={workPlaneControls}
           />
         )}
 

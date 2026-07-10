@@ -168,6 +168,102 @@ def create_slab(
     return slab
 
 
+def create_ih_profile(
+    f: ifcopenshell.file,
+    h: float,
+    b: float,
+    tw: float,
+    tf: float,
+    name: str | None = None,
+):
+    return f.create_entity(
+        "IfcIShapeProfileDef",
+        ProfileType="AREA",
+        ProfileName=name,
+        OverallHeight=h,
+        OverallWidth=b,
+        WebThickness=tw,
+        FlangeThickness=tf,
+    )
+
+
+def create_lh_profile(
+    f: ifcopenshell.file,
+    h: float,
+    b: float,
+    tw: float,
+    tf: float,
+    name: str | None = None,
+):
+    return f.create_entity(
+        "IfcLShapeProfileDef",
+        ProfileType="AREA",
+        ProfileName=name,
+        OverallHeight=h,
+        OverallWidth=b,
+        Thickness=tw,
+        FilletRadius=0.0,
+    )
+
+
+def create_u_profile(
+    f: ifcopenshell.file,
+    h: float,
+    b: float,
+    tw: float,
+    tf: float,
+    name: str | None = None,
+):
+    return f.create_entity(
+        "IfcUShapeProfileDef",
+        ProfileType="AREA",
+        ProfileName=name,
+        OverallHeight=h,
+        OverallWidth=b,
+        WebThickness=tw,
+        FlangeThickness=tf,
+        FlangeSlope=0.0,
+    )
+
+
+def create_circular_profile(
+    f: ifcopenshell.file,
+    d: float,
+    name: str | None = None,
+):
+    radius = d / 2.0
+    outer_curve = f.create_entity("IfcCircle", Radius=radius)
+    return f.create_entity(
+        "IfcCircleProfileDef",
+        ProfileType="AREA",
+        ProfileName=name,
+        Radius=radius,
+        Position=f.create_entity(
+            "IfcAxis2Placement2D",
+            Location=f.create_entity("IfcCartesianPoint", Coordinates=[0.0, 0.0]),
+        ),
+    )
+
+
+def create_rectangle_hollow_profile(
+    f: ifcopenshell.file,
+    b: float,
+    h: float,
+    tw: float,
+    tf: float,
+    name: str | None = None,
+):
+    return f.create_entity(
+        "IfcRectangleHollowProfileDef",
+        ProfileType="AREA",
+        ProfileName=name,
+        OverallWidth=b,
+        OverallHeight=h,
+        WallThickness=tw,
+        InnerFilletRadius=0.0,
+    )
+
+
 def create_column(
     entry: ModelEntry,
     name: str | None,
@@ -177,19 +273,40 @@ def create_column(
     position=(0.0, 0.0, 0.0),
     rotation_z: float = 0.0,
     storey_guid: str | None = None,
+    profile: str | None = None,
+    shape: str | None = None,
+    h: float | None = None,
+    b: float | None = None,
+    tw: float | None = None,
+    tf: float | None = None,
 ) -> ifcopenshell.entity_instance:
-    """Cria um IfcColumn de seção retangular extrudada na vertical (Z)."""
+    """Cria um IfcColumn com perfil real de acordo com os parâmetros recebidos."""
     with mutate(entry) as f:
         body = get_body_context(f)
         column = ifcopenshell.api.run(
             "root.create_entity", f, ifc_class="IfcColumn", name=name
         )
-        profile = rect_profile(f, width, depth)
+        if shape and h and b and tw and tf:
+            if shape == "I" or shape == "H":
+                profile_entity = create_ih_profile(f, h, b, tw, tf, name=profile)
+            elif shape == "U":
+                profile_entity = create_u_profile(f, h, b, tw, tf, name=profile)
+            elif shape == "L":
+                profile_entity = create_lh_profile(f, h, b, tw, tf, name=profile)
+            elif shape == "Tubular Circ.":
+                profile_entity = create_circular_profile(f, h, name=profile)
+            elif shape == "Tubular Ret.":
+                profile_entity = create_rectangle_hollow_profile(f, b, h, tw, tf, name=profile)
+            else:
+                profile_entity = rect_profile(f, width, depth)
+        else:
+            profile_entity = rect_profile(f, width, depth)
+
         rep = ifcopenshell.api.run(
             "geometry.add_profile_representation",
             f,
             context=body,
-            profile=profile,
+            profile=profile_entity,
             depth=height,
         )
         ifcopenshell.api.run(

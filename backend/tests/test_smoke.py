@@ -144,6 +144,25 @@ def test_create_column():
     assert abs(sx - 0.4) < 1e-6 and abs(sy - 0.4) < 1e-6 and abs(sz - 3) < 1e-6
 
 
+def test_create_column_with_profile():
+    mid = _new_model()
+    guid = client.post(
+        f"/ifc/models/{mid}/geometry/column",
+        json={
+            "name": "C-profile",
+            "profile": "W200x15",
+            "shape": "H",
+            "h": 0.203,
+            "b": 0.102,
+            "tw": 0.0058,
+            "tf": 0.0084,
+            "height": 3,
+        },
+    ).json()["guid"]
+    sx, sy, sz = _span(client.get(f"/ifc/models/{mid}/mesh/{guid}").json())
+    assert abs(sx - 0.102) < 1e-5 and abs(sy - 0.203) < 1e-5 and abs(sz - 3) < 1e-5
+
+
 def test_create_beam_horizontal():
     """Viga horizontal: comprimento ao longo de X, seção width×depth em Y/Z."""
     mid = _new_model()
