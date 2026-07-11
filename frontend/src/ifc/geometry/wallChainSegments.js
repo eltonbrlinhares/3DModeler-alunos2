@@ -63,3 +63,61 @@ export function miteredWallSegments(points, thickness, closed = false) {
 
   return segs;
 }
+
+/**
+ * Comprimento, posição (origem do perfil) e rotação_z de uma parede retangular
+ * a partir do eixo p0->p1 e da espessura — o mesmo cálculo usado tanto para
+ * criar (`createWall`) quanto para editar (`editDimensions`+`editPlacement`)
+ * um segmento no backend, centralizado aqui para não duplicar a fórmula.
+ */
+export function wallSegmentPlacement(p0, p1, thickness) {
+  const dx = p1.x - p0.x;
+  const dy = p1.y - p0.y;
+  const length = Math.hypot(dx, dy);
+  const rotation_z = Math.atan2(dy, dx);
+  const perp = new THREE.Vector3(-Math.sin(rotation_z), Math.cos(rotation_z), 0);
+  const origin = p0.clone().addScaledVector(perp, -thickness / 2);
+  return { length, rotation_z, position: [origin.x, origin.y, origin.z] };
+}
+
+/**
+ * Redimensiona um lado de uma cadeia FECHADA de 4 pontos, reconstruindo-a como
+ * um retângulo exato: o lado editado (`i`) e o seu OPOSTO (`i+2`) ficam com a
+ * mesma medida nova; os outros dois lados (`i+1`, `i+3`) mantêm o comprimento
+ * atual do lado adjacente (`i+1`) — o "EQ" de cotas opostas do Revit.
+ *
+ * Reconstrói (não apenas translada) porque uma cadeia desenhada a mão livre
+ * raramente é um paralelogramo perfeito — se só transladássemos os vértices
+ * vizinhos, o lado oposto ficaria com um comprimento diferente do novo valor
+ * sempre que os ângulos não fossem exatamente retos.
+ *
+ * @param {THREE.Vector3[]} points exatamente 4 vértices (cadeia fechada)
+ * @param {number} i índice do lado editado (entre points[i] e points[i+1])
+ * @param {number} newLength nova medida (m) do lado `i` (e do seu oposto)
+ * @returns {THREE.Vector3[]} novos 4 vértices, formando um retângulo exato
+ */
+export function resizeRectangleSide(points, i, newLength) {
+  const n = points.length;
+  const ip1 = (i + 1) % n;
+  const ip2 = (i + 2) % n;
+  const ip3 = (i + 3) % n;
+  const anchor = points[i];
+
+  const dirA = new THREE.Vector3().subVectors(points[ip1], anchor).normalize();
+  const dirB = new THREE.Vector3(-dirA.y, dirA.x, 0);
+  const towardIp2 = new THREE.Vector3().subVectors(points[ip2], points[ip1]);
+  if (dirB.dot(towardIp2) < 0) dirB.negate();
+  const depth = points[ip1].distanceTo(points[ip2]) || 1e-6;
+
+  const newAnchor = anchor.clone();
+  const newIp1 = anchor.clone().addScaledVector(dirA, newLength);
+  const newIp2 = newIp1.clone().addScaledVector(dirB, depth);
+  const newIp3 = anchor.clone().addScaledVector(dirB, depth);
+
+  const result = points.map((p) => p.clone());
+  result[i] = newAnchor;
+  result[ip1] = newIp1;
+  result[ip2] = newIp2;
+  result[ip3] = newIp3;
+  return result;
+}

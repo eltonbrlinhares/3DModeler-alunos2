@@ -41,6 +41,7 @@ export default function TopToolbar({
   onHeightChange,
   onConvert3D,
   canConvert,
+  is3DActive,
   busy,
   disabled,
 }) {
@@ -77,10 +78,14 @@ export default function TopToolbar({
       ))}
 
       <button
-        title="3D — extruda as paredes desenhadas em planta com a altura configurada"
+        title={
+          is3DActive
+            ? "3D — voltar para a planta 2D"
+            : "3D — extruda as paredes desenhadas em planta com a altura configurada"
+        }
         disabled={disabled || busy || !canConvert}
         onClick={onConvert3D}
-        style={btnStyle(false, disabled || busy || !canConvert)}
+        style={btnStyle(is3DActive, disabled || busy || !canConvert)}
       >
         3D
       </button>

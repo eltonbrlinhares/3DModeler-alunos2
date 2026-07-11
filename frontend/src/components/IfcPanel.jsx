@@ -36,7 +36,7 @@ import {
   DEFAULT_WALL_HEIGHT,
 } from "../ifc/planSketch/WallSketchController.js";
 import { DimensionController } from "../ifc/planSketch/DimensionController.js";
-import { miteredWallSegments } from "../ifc/geometry/wallChainSegments.js";
+import { miteredWallSegments, wallSegmentPlacement } from "../ifc/geometry/wallChainSegments.js";
 import TopToolbar from "./TopToolbar.jsx";
 
 // O seletor de tipo, os campos do formulário e o botão "+ Elemento" são
@@ -680,50 +680,68 @@ export default function IfcPanel({
     setSketchTool(tool);
   };
 
-  // ── toolbar superior: 3D — extruda as cadeias em planta ainda não convertidas
-  const convert3D = async () => {
+  // ── toolbar superior: 3D — alterna entre planta 2D e extrusão 3D ───────────
+  const convertPendingChainsTo3D = async (pending) => {
     const wallSketch = wallSketchRef.current;
-    const pending = wallSketch?.getChains().filter((c) => !c.wallGuids) ?? [];
-    if (!modelId || !pending.length) {
+    setStatus("Gerando paredes 3D…");
+    const height = Number(wallHeight) || DEFAULT_WALL_HEIGHT;
+    let seq = elementsRef.current.length + 1;
+    for (const chain of pending) {
+      const segments = miteredWallSegments(chain.points, chain.thickness, chain.closed);
+      const guids = [];
+      for (const seg of segments) {
+        const { length, rotation_z, position } = wallSegmentPlacement(seg.p0, seg.p1, chain.thickness);
+        if (length < 0.02) {
+          guids.push(null);
+          continue;
+        }
+        const storey_guid = chain.levelGuid ?? (await firstStorey(modelId));
+        const { guid } = await ifcApi.createWall(modelId, {
+          name: `W${seq++}`,
+          length,
+          height,
+          thickness: chain.thickness,
+          position,
+          rotation_z,
+          storey_guid,
+        });
+        guids.push(guid);
+      }
+      wallSketch.markChainConverted(chain.id, guids, height);
+    }
+    setStatus("Paredes 3D geradas a partir da planta.");
+  };
+
+  const revertConvertedChainsTo2D = async (converted) => {
+    const wallSketch = wallSketchRef.current;
+    setStatus("Voltando para a planta 2D…");
+    for (const chain of converted) {
+      for (const guid of chain.wallGuids) {
+        if (guid) await ifcApi.deleteEntity(modelId, guid);
+      }
+      wallSketch.revertChainTo2D(chain.id);
+    }
+    setStatus("De volta à planta 2D.");
+  };
+
+  const toggle3D = async () => {
+    const wallSketch = wallSketchRef.current;
+    if (!modelId || !wallSketch) return;
+    const chains = wallSketch.getChains();
+    const converted = chains.filter((c) => c.wallGuids);
+    const pending = chains.filter((c) => !c.wallGuids);
+    if (!converted.length && !pending.length) {
       setStatus("Nenhuma parede em planta para converter.");
       return;
     }
     try {
       setBusy(true);
-      setStatus("Gerando paredes 3D…");
-      const height = Number(wallHeight) || DEFAULT_WALL_HEIGHT;
-      let seq = elementsRef.current.length + 1;
-      for (const chain of pending) {
-        const segments = miteredWallSegments(chain.points, chain.thickness, chain.closed);
-        const guids = [];
-        for (const seg of segments) {
-          const dx = seg.p1.x - seg.p0.x;
-          const dy = seg.p1.y - seg.p0.y;
-          const length = Math.hypot(dx, dy);
-          if (length < 0.02) {
-            guids.push(null);
-            continue;
-          }
-          const rotation_z = Math.atan2(dy, dx);
-          const perp = new THREE.Vector3(-Math.sin(rotation_z), Math.cos(rotation_z), 0);
-          const origin = seg.p0.clone().addScaledVector(perp, -chain.thickness / 2);
-          const storey_guid = chain.levelGuid ?? (await firstStorey(modelId));
-          const { guid } = await ifcApi.createWall(modelId, {
-            name: `W${seq++}`,
-            length,
-            height,
-            thickness: chain.thickness,
-            position: [origin.x, origin.y, origin.z],
-            rotation_z,
-            storey_guid,
-          });
-          guids.push(guid);
-        }
-        wallSketch.markChainConverted(chain.id, guids, height);
-      }
+      // se já existe algo em 3D, o clique alterna de volta para a planta;
+      // caso contrário, converte o que ainda está só em planta.
+      if (converted.length) await revertConvertedChainsTo2D(converted);
+      else await convertPendingChainsTo3D(pending);
       await refreshLists(modelId);
       await refreshMesh(modelId);
-      setStatus("Paredes 3D geradas a partir da planta.");
       setBusy(false);
     } catch (e) {
       fail(e);
@@ -950,7 +968,9 @@ export default function IfcPanel({
   }, [modelId]);
 
   const isWall = selected?.type === "IfcWall";
-  const canConvert = wallSketchRef.current?.getChains().some((c) => !c.wallGuids) ?? false;
+  const sketchChains = wallSketchRef.current?.getChains() ?? [];
+  const canConvert = sketchChains.some((c) => !c.wallGuids);
+  const is3DActive = sketchChains.some((c) => c.wallGuids);
 
   // ── UI ────────────────────────────────────────────────────────────────────
   return (
@@ -962,8 +982,9 @@ export default function IfcPanel({
         onThicknessChange={setWallThickness}
         wallHeight={wallHeight}
         onHeightChange={setWallHeight}
-        onConvert3D={convert3D}
-        canConvert={canConvert}
+        onConvert3D={toggle3D}
+        canConvert={canConvert || is3DActive}
+        is3DActive={is3DActive}
         busy={busy}
         disabled={!modelId}
       />

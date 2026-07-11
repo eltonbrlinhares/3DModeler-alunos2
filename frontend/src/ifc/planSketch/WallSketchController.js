@@ -316,6 +316,21 @@ export class WallSketchController {
     if (!chain.wallGuids) this._renderChainFlat(chain);
   }
 
+  /** Volta uma cadeia já convertida para planta 2D (os IfcWall já devem ter sido
+   * apagados no backend por quem chama isso — aqui só se limpa a referência e
+   * volta a desenhar a malha plana persistente). */
+  revertChainTo2D(chainId) {
+    const chain = this.getChain(chainId);
+    if (!chain || !chain.wallGuids) return;
+    for (const guid of chain.wallGuids) {
+      if (guid) this._guidToSegment.delete(guid);
+    }
+    chain.wallGuids = null;
+    chain.height = null;
+    this._renderChainFlat(chain);
+    this.onChainsChanged?.();
+  }
+
   removeChain(chainId) {
     this._disposeChainMesh(chainId);
     this.chains = this.chains.filter((c) => c.id !== chainId);
