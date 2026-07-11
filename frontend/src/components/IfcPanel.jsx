@@ -13,6 +13,7 @@
  */
 
 import { useEffect, useRef, useState, useCallback } from "react";
+import * as THREE from "three";
 
 import ifcApi from "../services/ifcApi.js";
 import { IfcSceneManager } from "../ifc/IfcSceneManager.js";
@@ -29,6 +30,14 @@ import {
   STEEL_BEAM_FAMILIES,
   STEEL_BEAM_FAMILY_OPTIONS,
 } from "../data/steelBeamProfiles.js";
+import {
+  WallSketchController,
+  DEFAULT_WALL_THICKNESS,
+  DEFAULT_WALL_HEIGHT,
+} from "../ifc/planSketch/WallSketchController.js";
+import { DimensionController } from "../ifc/planSketch/DimensionController.js";
+import { miteredWallSegments } from "../ifc/geometry/wallChainSegments.js";
+import TopToolbar from "./TopToolbar.jsx";
 
 // O seletor de tipo, os campos do formulário e o botão "+ Elemento" são
 // dirigidos pelo registro de ferramentas (cada uma carrega label/fields/defaults).
@@ -114,6 +123,12 @@ export default function IfcPanel({
   const [newLevel, setNewLevel] = useState({ name: "Level", elevation: 3 });
   const [gridForm, setGridForm] = useState({ nu: 3, nv: 3, spacing: 5 });
 
+  // ── ferramenta Parede/3D/Cota (toolbar superior) ──
+  const [sketchTool, setSketchTool] = useState(null); // null | "wall" | "dimension"
+  const [wallThickness, setWallThickness] = useState(DEFAULT_WALL_THICKNESS);
+  const [wallHeight, setWallHeight] = useState(DEFAULT_WALL_HEIGHT);
+  const [, setChainsVersion] = useState(0); // bump para reagir a mudanças nas chains (fora do React state)
+
   const mgrRef = useRef(null);
   const datumRef = useRef(null);
   const transformRef = useRef(null);
@@ -123,6 +138,8 @@ export default function IfcPanel({
   const orbitRef = useRef(null);
   const domRef = useRef(null);
   const insertionRef = useRef(null);
+  const wallSketchRef = useRef(null);
+  const dimensionRef = useRef(null);
   const modelIdRef = useRef(null);
   const selectedRef = useRef(null);
   const formRef = useRef(form);
@@ -130,6 +147,7 @@ export default function IfcPanel({
   const levelsRef = useRef(levels);
   const gridsRef = useRef(grids);
   const activeLevelGuidRef = useRef(activeLevelGuid);
+  const sketchToolRef = useRef(sketchTool);
   modelIdRef.current = modelId;
   selectedRef.current = selected;
   formRef.current = form;
@@ -137,6 +155,7 @@ export default function IfcPanel({
   levelsRef.current = levels;
   gridsRef.current = grids;
   activeLevelGuidRef.current = activeLevelGuid;
+  sketchToolRef.current = sketchTool;
 
   const fail = useCallback((e) => {
     console.error("[IFC]", e);
@@ -213,13 +232,50 @@ export default function IfcPanel({
     insertion.attach();
     insertionRef.current = insertion;
 
-    // seleção por clique (raycast). Inerte durante inserção ou arraste de gizmo.
+    // ferramenta "Parede" (planta 2D, linhas duplas) — toolbar superior
+    const wallSketch = new WallSketchController({
+      getScene: () => scene,
+      getCamera: () => camera,
+      getDom: () => dom,
+      getOrbit: () => orbit,
+      getGrids: () => gridsRef.current,
+      getDatumManager: () => datumRef.current,
+    });
+    wallSketch.onStatus = setStatus;
+    wallSketch.onChainsChanged = () => setChainsVersion((v) => v + 1);
+    wallSketch.mount();
+    wallSketch.attach();
+    wallSketchRef.current = wallSketch;
+
+    // ferramenta "Cota" — mede/edita paramétricamente um trecho de parede
+    const dimension = new DimensionController({
+      getScene: () => scene,
+      getCamera: () => camera,
+      getDom: () => dom,
+      getOrbit: () => orbit,
+      getWallSketch: () => wallSketchRef.current,
+      getIfcManager: () => mgrRef.current,
+      getModelId: () => modelIdRef.current,
+      api: ifcApi,
+      onGeometryChanged: async (id) => {
+        await refreshMesh(id);
+        await refreshLists(id);
+      },
+      setStatus,
+      onError: fail,
+    });
+    dimension.mount();
+    dimension.attach();
+    dimensionRef.current = dimension;
+
+    // seleção por clique (raycast). Inerte durante inserção, arraste de gizmo
+    // ou enquanto a ferramenta Parede/Cota estiver ativa.
     const selection = new SelectionController({
       camera,
       dom,
       getManager: () => mgrRef.current,
       onPick: (guid) => selectGuid(guid),
-      isInserting: () => insertion.active,
+      isInserting: () => insertion.active || Boolean(sketchToolRef.current),
       isTransforming: () => transform.dragging,
     });
     selection.attach();
@@ -228,6 +284,8 @@ export default function IfcPanel({
     return () => {
       selection.dispose();
       insertion.dispose();
+      dimension.dispose();
+      wallSketch.dispose();
       transform.dispose();
       orbit.enabled = true;
       mgr.dispose();
@@ -238,12 +296,34 @@ export default function IfcPanel({
       transformRef.current = null;
       selectionRef.current = null;
       insertionRef.current = null;
+      wallSketchRef.current = null;
+      dimensionRef.current = null;
       sceneRef.current = null;
       cameraRef.current = null;
       orbitRef.current = null;
       domRef.current = null;
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  // ativa/desativa a ferramenta de planta conforme o botão selecionado na
+  // TopToolbar (mutuamente exclusiva com a inserção via dropdown do IfcPanel)
+  useEffect(() => {
+    wallSketchRef.current?.setActive(sketchTool === "wall", activeInsertionLevel());
+    dimensionRef.current?.setActive(sketchTool === "dimension");
+  }, [sketchTool]);
+
+  useEffect(() => {
+    wallSketchRef.current?.setThickness(wallThickness);
+  }, [wallThickness]);
+
+  // Esc cancela a ferramenta de planta ativa (Parede/Cota)
+  useEffect(() => {
+    const onKey = (e) => {
+      if (e.key === "Escape" && sketchToolRef.current) setSketchTool(null);
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
   }, []);
 
   useEffect(() => {
@@ -589,6 +669,67 @@ export default function IfcPanel({
     else insertion.begin(elemType);
   };
 
+  // ── toolbar superior: Parede / Cota (mutuamente exclusivas com o dropdown) ─
+  const selectSketchTool = (tool) => {
+    if (tool) {
+      insertionRef.current?.cancel();
+      transformRef.current?.detach();
+      setSelected(null);
+      setDetail(null);
+    }
+    setSketchTool(tool);
+  };
+
+  // ── toolbar superior: 3D — extruda as cadeias em planta ainda não convertidas
+  const convert3D = async () => {
+    const wallSketch = wallSketchRef.current;
+    const pending = wallSketch?.getChains().filter((c) => !c.wallGuids) ?? [];
+    if (!modelId || !pending.length) {
+      setStatus("Nenhuma parede em planta para converter.");
+      return;
+    }
+    try {
+      setBusy(true);
+      setStatus("Gerando paredes 3D…");
+      const height = Number(wallHeight) || DEFAULT_WALL_HEIGHT;
+      let seq = elementsRef.current.length + 1;
+      for (const chain of pending) {
+        const segments = miteredWallSegments(chain.points, chain.thickness, chain.closed);
+        const guids = [];
+        for (const seg of segments) {
+          const dx = seg.p1.x - seg.p0.x;
+          const dy = seg.p1.y - seg.p0.y;
+          const length = Math.hypot(dx, dy);
+          if (length < 0.02) {
+            guids.push(null);
+            continue;
+          }
+          const rotation_z = Math.atan2(dy, dx);
+          const perp = new THREE.Vector3(-Math.sin(rotation_z), Math.cos(rotation_z), 0);
+          const origin = seg.p0.clone().addScaledVector(perp, -chain.thickness / 2);
+          const storey_guid = chain.levelGuid ?? (await firstStorey(modelId));
+          const { guid } = await ifcApi.createWall(modelId, {
+            name: `W${seq++}`,
+            length,
+            height,
+            thickness: chain.thickness,
+            position: [origin.x, origin.y, origin.z],
+            rotation_z,
+            storey_guid,
+          });
+          guids.push(guid);
+        }
+        wallSketch.markChainConverted(chain.id, guids, height);
+      }
+      await refreshLists(modelId);
+      await refreshMesh(modelId);
+      setStatus("Paredes 3D geradas a partir da planta.");
+      setBusy(false);
+    } catch (e) {
+      fail(e);
+    }
+  };
+
   // ── edição do selecionado ─────────────────────────────────────────────────
   const applyTransform = async (mesh, params) => {
     const guid = mesh.userData.ifc.guid;
@@ -809,9 +950,23 @@ export default function IfcPanel({
   }, [modelId]);
 
   const isWall = selected?.type === "IfcWall";
+  const canConvert = wallSketchRef.current?.getChains().some((c) => !c.wallGuids) ?? false;
 
   // ── UI ────────────────────────────────────────────────────────────────────
   return (
+    <>
+      <TopToolbar
+        sketchTool={sketchTool}
+        onSelectTool={selectSketchTool}
+        wallThickness={wallThickness}
+        onThicknessChange={setWallThickness}
+        wallHeight={wallHeight}
+        onHeightChange={setWallHeight}
+        onConvert3D={convert3D}
+        canConvert={canConvert}
+        busy={busy}
+        disabled={!modelId}
+      />
     <div style={S.panel}>
       <div style={S.head}>
         <div style={S.brand}>
@@ -1967,6 +2122,7 @@ export default function IfcPanel({
 
       <div style={S.status}>{status}</div>
     </div>
+    </>
   );
 }
 
