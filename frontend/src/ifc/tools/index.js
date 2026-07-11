@@ -13,10 +13,12 @@ import { wallTool } from "./wallTool.js";
 import { slabTool } from "./slabTool.js";
 import { beamTool } from "./beamTool.js";
 import { columnTool } from "./columnTool.js";
+import { footingTool } from "./footingTool.js";
 
 export const INSERTION_TOOLS = {
   [wallTool.id]: wallTool,
   [slabTool.id]: slabTool,
   [beamTool.id]: beamTool,
   [columnTool.id]: columnTool,
+  [footingTool.id]: footingTool,
 };

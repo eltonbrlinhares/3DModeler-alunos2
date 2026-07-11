@@ -8,11 +8,13 @@ from app.api.deps import get_entry
 from app.models.schemas import (
     CreateBeamRequest,
     CreateColumnRequest,
+    CreateFootingRequest,
     CreateSlabRequest,
     CreateWallGeomRequest,
     EditDimensionsRequest,
     EditPlacementRequest,
 )
+from app.services import edit_service as edit
 from app.services import geometry_service as geo
 from app.services.ifc_service import ModelEntry
 
@@ -50,10 +52,51 @@ def create_slab(req: CreateSlabRequest, entry: ModelEntry = Depends(get_entry)):
             position=tuple(req.position),
             rotation_z=req.rotation_z,
             storey_guid=req.storey_guid,
+            predefined_type=req.predefined_type,
         )
     except (RuntimeError, ValueError) as e:
         raise HTTPException(400, f"falha ao criar laje: {e}")
     return {"ok": True, "guid": slab.GlobalId, "id": slab.id()}
+
+
+@router.post("/footing")
+def create_footing(req: CreateFootingRequest, entry: ModelEntry = Depends(get_entry)):
+    """Cria uma fundacao rasa (IfcFooting): sapata isolada (PAD_FOOTING) ou
+    bloco sobre estacas (PILE_CAP), conforme `req.predefined_type`."""
+    try:
+        footing = geo.create_footing(
+            entry,
+            name=req.name,
+            base_width=req.base_width,
+            base_length=req.base_length,
+            height=req.height,
+            top_width=req.top_width,
+            top_length=req.top_length,
+            base_height=req.base_height,
+            pedestal_width=req.pedestal_width,
+            pedestal_length=req.pedestal_length,
+            pedestal_height=req.pedestal_height,
+            position=tuple(req.position),
+            rotation_z=req.rotation_z,
+            storey_guid=req.storey_guid,
+            predefined_type=req.predefined_type,
+        )
+    except RuntimeError as e:
+        raise HTTPException(400, f"falha ao criar fundação: {e}")
+    if req.pile_count:
+        try:
+            edit.edit_pset(
+                entry,
+                footing.GlobalId,
+                "Pset_FoundationCommon",
+                {
+                    "PileCount": req.pile_count,
+                    **({"PileDiameter": req.pile_diameter} if req.pile_diameter else {}),
+                },
+            )
+        except Exception:
+            pass  # metadados informativos; nao bloqueiam a criacao da geometria
+    return {"ok": True, "guid": footing.GlobalId, "id": footing.id()}
 
 
 @router.post("/column")

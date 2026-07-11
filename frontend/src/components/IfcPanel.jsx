@@ -607,6 +607,40 @@ export default function IfcPanel({
     }
   };
 
+  // sugestao preliminar de dimensoes da fundacao (sapata/bloco) — SOMENTE
+  // EXIBIDA como texto; nao altera os campos do formulario (o usuario decide
+  // o que digitar em base/topo/pedestal a partir da sugestao).
+  const [footingSuggestion, setFootingSuggestion] = useState(null);
+
+  const suggestFootingDimensions = async () => {
+    try {
+      setBusy(true);
+      if (form.predefinedType === "PILE_CAP") {
+        const r = await ifcApi.suggestPileCap({
+          axial_load_kn: Number(form.axialLoad) || 0,
+          pile_capacity_kn: Number(form.pileCapacity) || 0,
+          pile_diameter: Number(form.pileDiameter) || 0,
+        });
+        setFootingSuggestion(
+          `Sugestão (bloco): ${r.pile_count} estacas · base ${r.width}×${r.length} m · altura ${r.height} m. ${r.notes[0] ?? ""}`
+        );
+      } else {
+        const r = await ifcApi.suggestPadFooting({
+          axial_load_kn: Number(form.axialLoad) || 0,
+          column_width: Number(form.columnWidth) || 0,
+          column_depth: Number(form.columnDepth) || 0,
+          soil_bearing_kpa: Number(form.soilBearing) || 0,
+        });
+        setFootingSuggestion(
+          `Sugestão (sapata): base ${r.width}×${r.length} m · altura ${r.height} m · balanço ${r.cantilever} m (${r.rigid ? "rígida" : "flexível"}).`
+        );
+      }
+      setBusy(false);
+    } catch (e) {
+      fail(e);
+    }
+  };
+
   const applyDims = async () => {
     const guid = selectedRef.current?.guid;
     if (!guid) return;
@@ -866,7 +900,8 @@ export default function IfcPanel({
         {(elemType === "wall" ||
           elemType === "slab" ||
           elemType === "beam" ||
-          elemType === "column") && (
+          elemType === "column" ||
+          elemType === "footing") && (
           <label style={S.fieldWide}>
             nível
             <select
@@ -1376,9 +1411,323 @@ export default function IfcPanel({
             </div>
           </div>
         )}
+        {elemType === "slab" && (
+          <div style={{ ...S.fieldWide, marginBottom: 6 }}>
+            Tipo
+            <div style={{ display: "flex", gap: 8, flexWrap: "wrap", marginTop: 3 }}>
+              {[
+                { value: null, label: "Laje" },
+                { value: "BASESLAB", label: "Radier" },
+              ].map((opt) => (
+                <label
+                  key={opt.label}
+                  style={{ fontSize: 10, display: "flex", alignItems: "center", gap: 4 }}
+                >
+                  <input
+                    type="radio"
+                    name="slab-predefined-type"
+                    checked={(form.predefinedType ?? null) === opt.value}
+                    disabled={Boolean(insertMode)}
+                    onChange={() =>
+                      setForm((f) => ({ ...f, predefinedType: opt.value }))
+                    }
+                  />
+                  {opt.label}
+                </label>
+              ))}
+            </div>
+          </div>
+        )}
+        {elemType === "footing" && (
+          <>
+            <div style={{ ...S.fieldWide, marginBottom: 6 }}>
+              Tipo
+              <div style={{ display: "flex", gap: 8, flexWrap: "wrap", marginTop: 3 }}>
+                {[
+                  { value: "PAD_FOOTING", label: "Sapata" },
+                  { value: "PILE_CAP", label: "Bloco (estacas)" },
+                ].map((opt) => (
+                  <label
+                    key={opt.value}
+                    style={{ fontSize: 10, display: "flex", alignItems: "center", gap: 4 }}
+                  >
+                    <input
+                      type="radio"
+                      name="footing-predefined-type"
+                      checked={(form.predefinedType ?? "PAD_FOOTING") === opt.value}
+                      disabled={Boolean(insertMode)}
+                      onChange={() =>
+                        setForm((f) => ({ ...f, predefinedType: opt.value }))
+                      }
+                    />
+                    {opt.label}
+                  </label>
+                ))}
+              </div>
+            </div>
+
+            {/* geometria: rodapé reto (opcional) + base + topo (só sapata) + altura */}
+            <div style={S.row}>
+              <label style={S.field}>
+                base largura
+                <input
+                  style={S.num}
+                  type="number"
+                  step="0.05"
+                  value={form.baseWidth ?? ""}
+                  disabled={Boolean(insertMode)}
+                  onChange={(e) => setForm((f) => ({ ...f, baseWidth: e.target.value }))}
+                />
+              </label>
+              <label style={S.field}>
+                base compr.
+                <input
+                  style={S.num}
+                  type="number"
+                  step="0.05"
+                  value={form.baseLength ?? ""}
+                  disabled={Boolean(insertMode)}
+                  onChange={(e) => setForm((f) => ({ ...f, baseLength: e.target.value }))}
+                />
+              </label>
+              <label style={S.field}>
+                rodapé (h)
+                <input
+                  style={S.num}
+                  type="number"
+                  step="0.05"
+                  min="0"
+                  value={form.baseHeight ?? ""}
+                  disabled={Boolean(insertMode)}
+                  onChange={(e) => setForm((f) => ({ ...f, baseHeight: e.target.value }))}
+                />
+              </label>
+            </div>
+            <div style={S.row}>
+              <label style={S.field}>
+                altura tronco
+                <input
+                  style={S.num}
+                  type="number"
+                  step="0.05"
+                  value={form.height ?? ""}
+                  disabled={Boolean(insertMode)}
+                  onChange={(e) => setForm((f) => ({ ...f, height: e.target.value }))}
+                />
+              </label>
+            </div>
+            {form.predefinedType !== "PILE_CAP" && (
+              <div style={S.row}>
+                <label style={S.field}>
+                  topo largura
+                  <input
+                    style={S.num}
+                    type="number"
+                    step="0.05"
+                    value={form.topWidth ?? ""}
+                    disabled={Boolean(insertMode)}
+                    onChange={(e) => setForm((f) => ({ ...f, topWidth: e.target.value }))}
+                  />
+                </label>
+                <label style={S.field}>
+                  topo compr.
+                  <input
+                    style={S.num}
+                    type="number"
+                    step="0.05"
+                    value={form.topLength ?? ""}
+                    disabled={Boolean(insertMode)}
+                    onChange={(e) => setForm((f) => ({ ...f, topLength: e.target.value }))}
+                  />
+                </label>
+              </div>
+            )}
+
+            {form.predefinedType === "PILE_CAP" && (
+              <div style={S.row}>
+                <label style={S.field}>
+                  nº estacas
+                  <input
+                    style={S.num}
+                    type="number"
+                    step="1"
+                    min="1"
+                    value={form.pileCount ?? ""}
+                    disabled={Boolean(insertMode)}
+                    onChange={(e) =>
+                      setForm((f) => ({ ...f, pileCount: e.target.value }))
+                    }
+                  />
+                </label>
+                <label style={S.field}>
+                  Ø estaca
+                  <input
+                    style={S.num}
+                    type="number"
+                    step="0.05"
+                    value={form.pileDiameter ?? ""}
+                    disabled={Boolean(insertMode)}
+                    onChange={(e) =>
+                      setForm((f) => ({ ...f, pileDiameter: e.target.value }))
+                    }
+                  />
+                </label>
+              </div>
+            )}
+
+            {/* pedestal opcional */}
+            <label
+              style={{
+                ...S.fieldWide,
+                flexDirection: "row",
+                alignItems: "center",
+                gap: 4,
+                marginBottom: 4,
+              }}
+            >
+              <input
+                type="checkbox"
+                checked={Boolean(form.usePedestal)}
+                disabled={Boolean(insertMode)}
+                onChange={(e) =>
+                  setForm((f) => ({ ...f, usePedestal: e.target.checked }))
+                }
+              />
+              Pedestal
+            </label>
+            {form.usePedestal && (
+              <div style={S.row}>
+                <label style={S.field}>
+                  ped. largura
+                  <input
+                    style={S.num}
+                    type="number"
+                    step="0.05"
+                    value={form.pedestalWidth ?? ""}
+                    disabled={Boolean(insertMode)}
+                    onChange={(e) =>
+                      setForm((f) => ({ ...f, pedestalWidth: e.target.value }))
+                    }
+                  />
+                </label>
+                <label style={S.field}>
+                  ped. compr.
+                  <input
+                    style={S.num}
+                    type="number"
+                    step="0.05"
+                    value={form.pedestalLength ?? ""}
+                    disabled={Boolean(insertMode)}
+                    onChange={(e) =>
+                      setForm((f) => ({ ...f, pedestalLength: e.target.value }))
+                    }
+                  />
+                </label>
+                <label style={S.field}>
+                  ped. altura
+                  <input
+                    style={S.num}
+                    type="number"
+                    step="0.05"
+                    value={form.pedestalHeight ?? ""}
+                    disabled={Boolean(insertMode)}
+                    onChange={(e) =>
+                      setForm((f) => ({ ...f, pedestalHeight: e.target.value }))
+                    }
+                  />
+                </label>
+              </div>
+            )}
+
+            {/* dimensionamento: SÓ sugestão em texto, não altera os campos */}
+            <fieldset style={{ ...S.fs, marginTop: 6 }} disabled={Boolean(insertMode)}>
+              <legend>Sugestão de dimensionamento (não aplica)</legend>
+              <div style={S.row}>
+                <label style={S.field}>
+                  N (kN)
+                  <input
+                    style={S.num}
+                    type="number"
+                    step="10"
+                    value={form.axialLoad ?? ""}
+                    onChange={(e) =>
+                      setForm((f) => ({ ...f, axialLoad: e.target.value }))
+                    }
+                  />
+                </label>
+                {form.predefinedType === "PILE_CAP" ? (
+                  <label style={S.field}>
+                    cap. estaca (kN)
+                    <input
+                      style={S.num}
+                      type="number"
+                      step="10"
+                      value={form.pileCapacity ?? ""}
+                      onChange={(e) =>
+                        setForm((f) => ({ ...f, pileCapacity: e.target.value }))
+                      }
+                    />
+                  </label>
+                ) : (
+                  <label style={S.field}>
+                    σadm solo (kPa)
+                    <input
+                      style={S.num}
+                      type="number"
+                      step="10"
+                      value={form.soilBearing ?? ""}
+                      onChange={(e) =>
+                        setForm((f) => ({ ...f, soilBearing: e.target.value }))
+                      }
+                    />
+                  </label>
+                )}
+              </div>
+              {form.predefinedType !== "PILE_CAP" && (
+                <div style={S.row}>
+                  <label style={S.field}>
+                    pilar largura
+                    <input
+                      style={S.num}
+                      type="number"
+                      step="0.05"
+                      value={form.columnWidth ?? ""}
+                      onChange={(e) =>
+                        setForm((f) => ({ ...f, columnWidth: e.target.value }))
+                      }
+                    />
+                  </label>
+                  <label style={S.field}>
+                    pilar profund.
+                    <input
+                      style={S.num}
+                      type="number"
+                      step="0.05"
+                      value={form.columnDepth ?? ""}
+                      onChange={(e) =>
+                        setForm((f) => ({ ...f, columnDepth: e.target.value }))
+                      }
+                    />
+                  </label>
+                </div>
+              )}
+              <button
+                style={{ ...S.btn, width: "100%" }}
+                disabled={busy}
+                onClick={suggestFootingDimensions}
+              >
+                Calcular sugestão
+              </button>
+              {footingSuggestion && (
+                <div style={{ ...S.hint, marginTop: 4 }}>{footingSuggestion}</div>
+              )}
+            </fieldset>
+          </>
+        )}
         {!(
           (elemType === "column" && columnKind === "steel") ||
-          (elemType === "beam" && beamKind === "steel")
+          (elemType === "beam" && beamKind === "steel") ||
+          elemType === "footing"
         ) && (
           <div style={S.row}>
             {ELEMENT_FORMS[elemType].fields.map((k) => (

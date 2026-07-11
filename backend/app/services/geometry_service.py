@@ -133,16 +133,24 @@ def create_slab(
     position=(0.0, 0.0, 0.0),
     rotation_z: float = 0.0,
     storey_guid: str | None = None,
+    predefined_type: str | None = None,
 ) -> ifcopenshell.entity_instance:
     """Cria um IfcSlab extrudado a partir do placement local.
 
     Se `polyline` for informada, ela define o contorno 2D local da laje.
     Caso contrario, usa o retangulo parametrico `length` x `width`.
+
+    `predefined_type`: None/"FLOOR" para laje comum, "BASESLAB" para radier
+    (laje de fundação) - mesma geometria, so muda a semantica IFC.
     """
     with mutate(entry) as f:
         body = get_body_context(f)
         slab = ifcopenshell.api.run(
-            "root.create_entity", f, ifc_class="IfcSlab", name=name
+            "root.create_entity",
+            f,
+            ifc_class="IfcSlab",
+            name=name,
+            **({"predefined_type": predefined_type} if predefined_type else {}),
         )
         if polyline is None:
             slab_polyline = [(0.0, 0.0), (length, 0.0), (length, width), (0.0, width)]
@@ -388,6 +396,160 @@ def create_beam(
         matrix = matrix_from(position, rotation_z) @ orient
         place_product(f, beam, matrix, storey_guid)
     return beam
+
+
+def _rect(width: float, length: float, z: float) -> list[tuple[float, float, float]]:
+    """4 cantos de um retangulo centrado em (0,0), no plano `z`, em ordem CCW
+    vista de +Z (usado como bloco de montagem da malha da fundacao)."""
+    hw, hl = width / 2.0, length / 2.0
+    return [(-hw, -hl, z), (hw, -hl, z), (hw, hl, z), (-hw, hl, z)]
+
+
+def _footing_mesh(
+    base_width: float,
+    base_length: float,
+    top_width: float,
+    top_length: float,
+    height: float,
+    pedestal_width: float | None,
+    pedestal_length: float | None,
+    pedestal_height: float,
+    base_height: float = 0.0,
+) -> tuple[list[tuple[float, float, float]], list[list[int]]]:
+    """Malha local (base em z=0, centrada em X/Y) em ate 3 estagios
+    empilhados:
+
+    1. "rodape" reto opcional (`base_height` > 0): caixa base_width x
+       base_length, paredes verticais - a base retangular vista na planta
+       antes do afunilamento comecar (o "degrau" na base do desenho).
+    2. TRONCO DE PIRAMIDE: base_width x base_length -> top_width x
+       top_length, com `height` de altura. Se base == top, degenera numa
+       caixa reta (usado pelo bloco).
+    3. PEDESTAL opcional (prisma reto) em cima. Se pedestal_width/length
+       forem None (ou iguais ao topo do tronco), solda direto, sem aba;
+       caso contrario sobra uma aba horizontal (moldura).
+
+    Retorna (vertices, faces) prontos para `geometry.add_mesh_representation`
+    (uma unica IfcRepresentationItem).
+    """
+    has_base_lip = bool(base_height and base_height > 0)
+    has_pedestal = bool(pedestal_height and pedestal_height > 0)
+    pw = pedestal_width if (has_pedestal and pedestal_width) else top_width
+    pl = pedestal_length if (has_pedestal and pedestal_length) else top_length
+
+    z_frustum_bottom = base_height if has_base_lip else 0.0
+    z_frustum_top = z_frustum_bottom + height
+
+    bottom = _rect(base_width, base_length, 0.0)
+    verts: list[tuple[float, float, float]] = list(bottom)
+    faces: list[list[int]] = [[0, 3, 2, 1]]  # base (normal para baixo)
+
+    frustum_bottom_idx = 0
+    if has_base_lip:
+        lip_top = _rect(base_width, base_length, z_frustum_bottom)
+        frustum_bottom_idx = len(verts)
+        verts += lip_top
+        for i in range(4):  # laterais RETAS do rodape
+            j = (i + 1) % 4
+            faces.append([i, j, frustum_bottom_idx + j, frustum_bottom_idx + i])
+
+    top = _rect(top_width, top_length, z_frustum_top)
+    top_idx = len(verts)
+    verts += top
+    for i in range(4):  # laterais do tronco (afunilando)
+        j = (i + 1) % 4
+        faces.append(
+            [frustum_bottom_idx + i, frustum_bottom_idx + j, top_idx + j, top_idx + i]
+        )
+
+    if not has_pedestal:
+        faces.append([top_idx, top_idx + 1, top_idx + 2, top_idx + 3])  # topo
+        return verts, faces
+
+    pb = _rect(pw, pl, z_frustum_top)                      # base do pedestal
+    pt = _rect(pw, pl, z_frustum_top + pedestal_height)     # topo do pedestal
+    i_pb, i_pt = len(verts), len(verts) + 4
+    verts += pb + pt
+
+    same_footprint = abs(pw - top_width) < 1e-6 and abs(pl - top_length) < 1e-6
+    if not same_footprint:
+        # aba horizontal (moldura) entre o topo do tronco e a base do pedestal
+        for i in range(4):
+            j = (i + 1) % 4
+            faces.append([top_idx + i, top_idx + j, i_pb + j, i_pb + i])
+
+    for i in range(4):  # laterais do pedestal
+        j = (i + 1) % 4
+        faces.append([i_pb + i, i_pb + j, i_pt + j, i_pt + i])
+    faces.append([i_pt, i_pt + 1, i_pt + 2, i_pt + 3])  # topo do pedestal
+
+    return verts, faces
+
+
+def create_footing(
+    entry: ModelEntry,
+    name: str | None,
+    base_width: float,
+    base_length: float,
+    height: float,
+    top_width: float | None = None,
+    top_length: float | None = None,
+    base_height: float = 0.0,
+    pedestal_width: float | None = None,
+    pedestal_length: float | None = None,
+    pedestal_height: float = 0.0,
+    position=(0.0, 0.0, 0.0),
+    rotation_z: float = 0.0,
+    storey_guid: str | None = None,
+    predefined_type: str = "PAD_FOOTING",
+) -> ifcopenshell.entity_instance:
+    """Cria um IfcFooting como malha (`geometry.add_mesh_representation`):
+
+    - rodape reto opcional (`base_height`) antes do afunilamento
+    - sapata: `top_width`/`top_length` menores que a base -> tronco de piramide
+    - bloco: `top_width`/`top_length` == base (padrao) -> caixa reta
+    - pedestal opcional em cima (prisma reto), com aba se for mais estreito
+      que o topo do tronco/caixa
+
+    `predefined_type`: "PAD_FOOTING" (sapata) ou "PILE_CAP" (bloco).
+    `position` e a face INFERIOR (base do rodape, ou do tronco se
+    base_height=0), centrada em planta - mesma convencao das demais
+    geometrias (coluna, laje).
+    """
+    top_width = top_width if top_width is not None else base_width
+    top_length = top_length if top_length is not None else base_length
+    with mutate(entry) as f:
+        body = get_body_context(f)
+        footing = ifcopenshell.api.run(
+            "root.create_entity",
+            f,
+            ifc_class="IfcFooting",
+            name=name,
+            predefined_type=predefined_type,
+        )
+        verts, faces = _footing_mesh(
+            base_width,
+            base_length,
+            top_width,
+            top_length,
+            height,
+            pedestal_width,
+            pedestal_length,
+            pedestal_height,
+            base_height,
+        )
+        rep = ifcopenshell.api.run(
+            "geometry.add_mesh_representation",
+            f,
+            context=body,
+            vertices=[verts],
+            faces=[faces],
+        )
+        ifcopenshell.api.run(
+            "geometry.assign_representation", f, product=footing, representation=rep
+        )
+        place_product(f, footing, matrix_from(position, rotation_z), storey_guid)
+    return footing
 
 
 def edit_placement(entry: ModelEntry, guid: str, matrix) -> None:

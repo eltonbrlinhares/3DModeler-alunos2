@@ -50,6 +50,7 @@ function finishSlab(ctx) {
   const axisRef = ctx.form.axisRef || "top";
   const origin = ctx.points[0].clone();
   origin.z += baseOffset(thickness, axisRef);
+  const isRaft = ctx.form.predefinedType === "BASESLAB";
   ctx.commit(
     ctx.api.createSlab,
     {
@@ -59,8 +60,9 @@ function finishSlab(ctx) {
       position: [origin.x, origin.y, origin.z],
       rotation_z: 0,
       storey_guid: ctx.level.guid,
+      ...(isRaft ? { predefined_type: "BASESLAB" } : {}),
     },
-    "Laje"
+    isRaft ? "Radier" : "Laje"
   );
 }
 
@@ -69,7 +71,8 @@ export const slabTool = {
   label: "Laje",
   prefix: "S",
   fields: ["thickness"],
-  defaults: { thickness: 0.25, axisRef: "top" },
+  // predefinedType: null/"FLOOR" = laje comum; "BASESLAB" = radier
+  defaults: { thickness: 0.25, axisRef: "top", predefinedType: null },
   minIntersections: 3,
 
   start(ctx) {
