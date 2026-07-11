@@ -66,6 +66,7 @@ export class WallSketchController {
     this.preview = null; // criado sob demanda (precisa da cena)
     this.onStatus = null; // (msg:string) => void, opcional
     this.onChainsChanged = null; // () => void, opcional — notifica mudanças em getChains()
+    this.onHistoryPush = null; // (before, after) => void, opcional — desfazer/refazer da planta
   }
 
   // ── ciclo de vida ──────────────────────────────────────────────────────────
@@ -217,6 +218,7 @@ export class WallSketchController {
       this._clearPreview();
       return;
     }
+    const before = this.snapshotChains();
     const chain = {
       id: nextChainId(),
       points: this.drawingPoints.map((p) => p.clone()),
@@ -232,6 +234,7 @@ export class WallSketchController {
     this.drawingPoints = [];
     this._clearPreview();
     this.onChainsChanged?.();
+    this.onHistoryPush?.(before, this.snapshotChains());
   }
 
   // ── malha plana persistente (linha dupla em planta) ──────────────────────
@@ -279,6 +282,48 @@ export class WallSketchController {
   // ── API usada pelo IfcPanel / DimensionController ────────────────────────
   getChains() {
     return this.chains;
+  }
+
+  /** Cópia serializável (sem THREE.Vector3) do estado das cadeias — usada pelo
+   * desfazer/refazer global do IfcPanel. */
+  snapshotChains() {
+    return this.chains.map((c) => ({
+      id: c.id,
+      points: c.points.map((p) => [p.x, p.y, p.z]),
+      thickness: c.thickness,
+      closed: c.closed,
+      levelGuid: c.levelGuid,
+      elevation: c.elevation,
+      height: c.height,
+      wallGuids: c.wallGuids ? [...c.wallGuids] : null,
+    }));
+  }
+
+  /** Restaura as cadeias a partir de um snapshot (desfazer/refazer). Redesenha
+   * as malhas planas e reconstrói o índice guid->segmento. */
+  restoreChains(snapshot) {
+    for (const chainId of [...this._chainMeshes.keys()]) this._disposeChainMesh(chainId);
+    this._guidToSegment.clear();
+    this.chains = snapshot.map((c) => ({
+      id: c.id,
+      points: c.points.map(([x, y, z]) => new THREE.Vector3(x, y, z)),
+      thickness: c.thickness,
+      closed: c.closed,
+      levelGuid: c.levelGuid,
+      elevation: c.elevation,
+      height: c.height,
+      wallGuids: c.wallGuids ? [...c.wallGuids] : null,
+    }));
+    for (const chain of this.chains) {
+      if (chain.wallGuids) {
+        chain.wallGuids.forEach((guid, segmentIndex) => {
+          if (guid) this._guidToSegment.set(guid, { chainId: chain.id, segmentIndex });
+        });
+      } else {
+        this._renderChainFlat(chain);
+      }
+    }
+    this.onChainsChanged?.();
   }
 
   getChain(chainId) {

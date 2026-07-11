@@ -43,6 +43,7 @@ export class DimensionController {
     getModelId,
     api,
     onGeometryChanged,
+    onHistoryPush,
     setStatus,
     onError,
   }) {
@@ -55,6 +56,7 @@ export class DimensionController {
     this.getModelId = getModelId;
     this.api = api;
     this.onGeometryChanged = onGeometryChanged;
+    this.onHistoryPush = onHistoryPush; // (sketchBefore, sketchAfter, backendCount) => void, opcional
     this.setStatus = setStatus ?? (() => {});
     this.onError = onError ?? ((e) => console.error(e));
 
@@ -262,6 +264,7 @@ export class DimensionController {
     if (!chain) return;
     const i = dim.segmentIndex;
     const oldPoints = chain.points.map((p) => p.clone());
+    const sketchBefore = wallSketch.snapshotChains();
     // cadeia fechada de 4 pontos (retângulo/paralelogramo): o lado oposto
     // acompanha a mesma medida nova, os outros dois lados ficam como estavam.
     const isRectangle = chain.closed && chain.points.length === 4;
@@ -279,17 +282,21 @@ export class DimensionController {
     }
     wallSketch.updateChainPoints(chain.id, newPoints);
 
+    let backendCount = 0;
     if (chain.wallGuids) {
-      if (isRectangle) await this._propagateRectangleToBackend(chain, i, oldPoints, newPoints);
-      else await this._propagateChainToBackend(chain, i, oldPoints, newPoints);
+      backendCount = isRectangle
+        ? await this._propagateRectangleToBackend(chain, i, oldPoints, newPoints)
+        : await this._propagateChainToBackend(chain, i, oldPoints, newPoints);
     }
     this._refreshDimensionsForChain(chain.id);
+    this.onHistoryPush?.(sketchBefore, wallSketch.snapshotChains(), backendCount);
   }
 
-  /** Cadeia ABERTA: o segmento editado muda de comprimento; os seguintes só transladam. */
+  /** Cadeia ABERTA: o segmento editado muda de comprimento; os seguintes só transladam.
+   * Retorna quantas chamadas de backend foram feitas (para o desfazer/refazer global). */
   async _propagateChainToBackend(chain, editedIndex, oldPoints, newPoints) {
     const modelId = this.getModelId();
-    if (!modelId) return;
+    if (!modelId) return 0;
     try {
       this.setStatus("Atualizando parede…");
       const height = chain.height ?? 2.8;
@@ -321,8 +328,10 @@ export class DimensionController {
       await Promise.all(calls);
       await this.onGeometryChanged?.(modelId);
       this.setStatus("Parede redimensionada.");
+      return calls.length;
     } catch (e) {
       this.onError(e);
+      return 0;
     }
   }
 
@@ -337,7 +346,7 @@ export class DimensionController {
    */
   async _propagateRectangleToBackend(chain, editedIndex, oldPoints, newPoints) {
     const modelId = this.getModelId();
-    if (!modelId) return;
+    if (!modelId) return 0;
     const n = newPoints.length;
     const i = editedIndex;
     const ip1 = (i + 1) % n;
@@ -362,14 +371,27 @@ export class DimensionController {
       await Promise.all(calls);
       await this.onGeometryChanged?.(modelId);
       this.setStatus("Parede redimensionada.");
+      return calls.length;
     } catch (e) {
       this.onError(e);
+      return 0;
     }
   }
 
   _refreshDimensionsForChain(chainId) {
     for (const dim of this.dimensions) {
       if (dim.chainId === chainId) this._redraw(dim);
+    }
+  }
+
+  /** Redesenha (ou descarta, se a cadeia não existe mais) todas as cotas —
+   * chamado após um desfazer/refazer global, já que as cadeias podem ter
+   * mudado de forma independente de qualquer clique nesta ferramenta. */
+  refreshAll() {
+    const wallSketch = this.getWallSketch();
+    for (const dim of [...this.dimensions]) {
+      if (wallSketch?.getChain(dim.chainId)) this._redraw(dim);
+      else this._disposeDimension(dim);
     }
   }
 

@@ -44,6 +44,10 @@ export default function TopToolbar({
   is3DActive,
   busy,
   disabled,
+  onUndo,
+  onRedo,
+  canUndo,
+  canRedo,
 }) {
   return (
     <div
@@ -65,6 +69,25 @@ export default function TopToolbar({
         color: "#e5e7eb",
       }}
     >
+      <button
+        title="Desfazer (qualquer ação: paredes, cotas, níveis, seleção, etc.)"
+        disabled={disabled || busy || !canUndo}
+        onClick={onUndo}
+        style={{ ...btnStyle(false, disabled || busy || !canUndo), minWidth: 34, fontSize: "1rem" }}
+      >
+        ↶
+      </button>
+      <button
+        title="Refazer"
+        disabled={disabled || busy || !canRedo}
+        onClick={onRedo}
+        style={{ ...btnStyle(false, disabled || busy || !canRedo), minWidth: 34, fontSize: "1rem" }}
+      >
+        ↷
+      </button>
+
+      <div style={{ width: 1, height: 22, background: "#374151", margin: "0 4px" }} />
+
       {TOOLS.map(({ id, label, title }) => (
         <button
           key={id}

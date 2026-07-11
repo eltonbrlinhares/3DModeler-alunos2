@@ -129,6 +129,15 @@ export default function IfcPanel({
   const [wallHeight, setWallHeight] = useState(DEFAULT_WALL_HEIGHT);
   const [, setChainsVersion] = useState(0); // bump para reagir a mudanças nas chains (fora do React state)
 
+  // ── desfazer/refazer GLOBAL (toolbar superior) ──
+  // Uma única pilha cobre tanto ações do backend (inserção via dropdown,
+  // mover/girar, editar dimensões/nome, apagar) quanto ações só-planta da
+  // Parede/Cota (que não tocam o backend até o "3D"). Cada registro sabe
+  // quantas chamadas de backend desfazer (`ifcApi.undo`) precisa reaplicar e,
+  // se mexeu na planta, um snapshot antes/depois para restaurar as cadeias.
+  const historyRef = useRef({ past: [], future: [] });
+  const [, setHistoryVersion] = useState(0); // bump para reagir à pilha (é um ref, não state)
+
   const mgrRef = useRef(null);
   const datumRef = useRef(null);
   const transformRef = useRef(null);
@@ -228,6 +237,7 @@ export default function IfcPanel({
       setBusy,
       setInsertMode,
       onError: fail,
+      onHistoryPush: (count) => pushHistory(count),
     });
     insertion.attach();
     insertionRef.current = insertion;
@@ -243,6 +253,7 @@ export default function IfcPanel({
     });
     wallSketch.onStatus = setStatus;
     wallSketch.onChainsChanged = () => setChainsVersion((v) => v + 1);
+    wallSketch.onHistoryPush = (before, after) => pushHistory(0, before, after);
     wallSketch.mount();
     wallSketch.attach();
     wallSketchRef.current = wallSketch;
@@ -261,6 +272,7 @@ export default function IfcPanel({
         await refreshMesh(id);
         await refreshLists(id);
       },
+      onHistoryPush: (before, after, backendCount) => pushHistory(backendCount, before, after),
       setStatus,
       onError: fail,
     });
@@ -635,26 +647,55 @@ export default function IfcPanel({
     [refreshLists, refreshMesh, refreshDatums]
   );
 
-  const undo = async () => {
-    if (!modelId) return;
+  // ── histórico global (desfazer/refazer) ───────────────────────────────────
+  // Registro: { backendCount, sketchBefore, sketchAfter }. `backendCount` diz
+  // quantas vezes chamar ifcApi.undo/redo em sequência (cada chamada de API
+  // do backend é um snapshot próprio); `sketchBefore/After` são snapshots das
+  // cadeias da Parede/Cota (ver WallSketchController.snapshotChains), usados
+  // quando a ação mexeu só na planta (ainda não convertida em 3D).
+  const pushHistory = useCallback((backendCount, sketchBefore = null, sketchAfter = null) => {
+    historyRef.current.past.push({ backendCount, sketchBefore, sketchAfter });
+    historyRef.current.future = [];
+    setHistoryVersion((v) => v + 1);
+  }, []);
+
+  const applyHistoryRecord = async (rec, direction) => {
+    const backendStep = direction === "undo" ? ifcApi.undo : ifcApi.redo;
+    for (let k = 0; k < (rec.backendCount ?? 0); k += 1) {
+      await backendStep(modelId);
+    }
+    const sketchState = direction === "undo" ? rec.sketchBefore : rec.sketchAfter;
+    if (sketchState) wallSketchRef.current?.restoreChains(sketchState);
+    await reloadAll(modelId);
+    dimensionRef.current?.refreshAll();
+  };
+
+  const globalUndo = async () => {
+    const rec = historyRef.current.past[historyRef.current.past.length - 1];
+    if (!rec || !modelId) return;
     try {
       setBusy(true);
-      const r = await ifcApi.undo(modelId);
-      await reloadAll(modelId);
-      setStatus(r.ok ? "Desfeito." : "Nada para desfazer.");
+      historyRef.current.past.pop();
+      historyRef.current.future.push(rec);
+      setHistoryVersion((v) => v + 1);
+      await applyHistoryRecord(rec, "undo");
+      setStatus("Desfeito.");
       setBusy(false);
     } catch (e) {
       fail(e);
     }
   };
 
-  const redo = async () => {
-    if (!modelId) return;
+  const globalRedo = async () => {
+    const rec = historyRef.current.future[historyRef.current.future.length - 1];
+    if (!rec || !modelId) return;
     try {
       setBusy(true);
-      const r = await ifcApi.redo(modelId);
-      await reloadAll(modelId);
-      setStatus(r.ok ? "Refeito." : "Nada para refazer.");
+      historyRef.current.future.pop();
+      historyRef.current.past.push(rec);
+      setHistoryVersion((v) => v + 1);
+      await applyHistoryRecord(rec, "redo");
+      setStatus("Refeito.");
       setBusy(false);
     } catch (e) {
       fail(e);
@@ -681,11 +722,13 @@ export default function IfcPanel({
   };
 
   // ── toolbar superior: 3D — alterna entre planta 2D e extrusão 3D ───────────
+  // Retorna quantos IfcWall foram criados (para o desfazer/refazer global).
   const convertPendingChainsTo3D = async (pending) => {
     const wallSketch = wallSketchRef.current;
     setStatus("Gerando paredes 3D…");
     const height = Number(wallHeight) || DEFAULT_WALL_HEIGHT;
     let seq = elementsRef.current.length + 1;
+    let created = 0;
     for (const chain of pending) {
       const segments = miteredWallSegments(chain.points, chain.thickness, chain.closed);
       const guids = [];
@@ -706,22 +749,30 @@ export default function IfcPanel({
           storey_guid,
         });
         guids.push(guid);
+        created += 1;
       }
       wallSketch.markChainConverted(chain.id, guids, height);
     }
     setStatus("Paredes 3D geradas a partir da planta.");
+    return created;
   };
 
+  // Retorna quantos IfcWall foram apagados (para o desfazer/refazer global).
   const revertConvertedChainsTo2D = async (converted) => {
     const wallSketch = wallSketchRef.current;
     setStatus("Voltando para a planta 2D…");
+    let deleted = 0;
     for (const chain of converted) {
       for (const guid of chain.wallGuids) {
-        if (guid) await ifcApi.deleteEntity(modelId, guid);
+        if (guid) {
+          await ifcApi.deleteEntity(modelId, guid);
+          deleted += 1;
+        }
       }
       wallSketch.revertChainTo2D(chain.id);
     }
     setStatus("De volta à planta 2D.");
+    return deleted;
   };
 
   const toggle3D = async () => {
@@ -736,12 +787,15 @@ export default function IfcPanel({
     }
     try {
       setBusy(true);
+      const sketchBefore = wallSketch.snapshotChains();
       // se já existe algo em 3D, o clique alterna de volta para a planta;
       // caso contrário, converte o que ainda está só em planta.
-      if (converted.length) await revertConvertedChainsTo2D(converted);
-      else await convertPendingChainsTo3D(pending);
+      const backendCount = converted.length
+        ? await revertConvertedChainsTo2D(converted)
+        : await convertPendingChainsTo3D(pending);
       await refreshLists(modelId);
       await refreshMesh(modelId);
+      pushHistory(backendCount, sketchBefore, wallSketch.snapshotChains());
       setBusy(false);
     } catch (e) {
       fail(e);
@@ -761,6 +815,7 @@ export default function IfcPanel({
       const fresh = mgrRef.current?.getMesh(guid);
       if (fresh) transformRef.current?.attach(fresh);
       setStatus("Posição salva.");
+      pushHistory(1);
     } catch (e) {
       fail(e);
     }
@@ -816,6 +871,7 @@ export default function IfcPanel({
       if (fresh) transformRef.current?.attach(fresh);
       setStatus("Dimensões atualizadas.");
       setBusy(false);
+      pushHistory(1);
     } catch (e) {
       fail(e);
     }
@@ -833,6 +889,7 @@ export default function IfcPanel({
       setSelected((s) => (s ? { ...s, name: rename } : s));
       setStatus("Renomeado.");
       setBusy(false);
+      pushHistory(1);
     } catch (e) {
       fail(e);
     }
@@ -851,6 +908,7 @@ export default function IfcPanel({
       await refreshLists(modelId);
       setStatus("Entidade removida.");
       setBusy(false);
+      pushHistory(1);
     } catch (e) {
       fail(e);
     }
@@ -987,6 +1045,10 @@ export default function IfcPanel({
         is3DActive={is3DActive}
         busy={busy}
         disabled={!modelId}
+        onUndo={globalUndo}
+        onRedo={globalRedo}
+        canUndo={historyRef.current.past.length > 0}
+        canRedo={historyRef.current.future.length > 0}
       />
     <div style={S.panel}>
       <div style={S.head}>
@@ -1040,15 +1102,6 @@ export default function IfcPanel({
         >
           .glb
         </a>
-      </div>
-
-      <div style={S.row}>
-        <button style={S.btn} disabled={!modelId || busy} onClick={undo}>
-          ↶ Desfazer
-        </button>
-        <button style={S.btn} disabled={!modelId || busy} onClick={redo}>
-          ↷ Refazer
-        </button>
       </div>
 
       {summary && (

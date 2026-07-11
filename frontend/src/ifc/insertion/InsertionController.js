@@ -13,7 +13,8 @@
  * valor atual dos refs do React):
  *   api, getScene, getCamera, getDom, getOrbit, getGrids, getLevels,
  *   getActiveLevel, getForm, getModelId, getElementsCount, getManager,
- *   firstStorey, refreshLists, setStatus, setBusy, setInsertMode, onError
+ *   firstStorey, refreshLists, setStatus, setBusy, setInsertMode, onError,
+ *   onHistoryPush (opcional — notifica o desfazer/refazer global após um commit)
  */
 import { PreviewLayer } from "./PreviewLayer.js";
 import { WALL_HEIGHT_PIXEL_SCALE } from "./constants.js";
@@ -156,6 +157,7 @@ export class InsertionController {
       this.end();
       d.setStatus(`${label} ${guid.slice(0, 8)} criado(a).`);
       d.setBusy(false);
+      d.onHistoryPush?.(1);
     } catch (e) {
       this.end(); // mesmo em erro, devolve o viewport
       d.onError(e);
