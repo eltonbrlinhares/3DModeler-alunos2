@@ -65,10 +65,19 @@ export const ifcApi = {
     req("POST", `/ifc/models/${id}/geometry/column`, params),
   createBeam: (id, params) =>
     req("POST", `/ifc/models/${id}/geometry/beam`, params),
+  createFooting: (id, params) =>
+    req("POST", `/ifc/models/${id}/geometry/footing`, params),
   editPlacement: (id, params) =>
     req("POST", `/ifc/models/${id}/geometry/placement`, params),
   editDimensions: (id, params) =>
     req("POST", `/ifc/models/${id}/geometry/dimensions`, params),
+
+  // ---------- dimensionamento preliminar (fundação) ----------
+  // stateless: sem model_id, so calcula uma sugestao de geometria
+  suggestPadFooting: (params) =>
+    req("POST", `/design/foundation/pad-footing`, params),
+  suggestPileCap: (params) =>
+    req("POST", `/design/foundation/pile-cap`, params),
 
   // ---------- dados ----------
   editAttributes: (id, guid, attributes) =>
