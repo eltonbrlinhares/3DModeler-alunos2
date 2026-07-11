@@ -176,14 +176,17 @@ def create_ih_profile(
     tf: float,
     name: str | None = None,
 ):
+    """Dimensões recebidas em metros; convertidas para as unidades do arquivo
+    (mesma convenção de `rect_profile`)."""
+    scale = ifcopenshell.util.unit.calculate_unit_scale(f)  # file unit -> m
     return f.create_entity(
         "IfcIShapeProfileDef",
         ProfileType="AREA",
         ProfileName=name,
-        OverallHeight=h,
-        OverallWidth=b,
-        WebThickness=tw,
-        FlangeThickness=tf,
+        OverallWidth=b / scale,
+        OverallDepth=h / scale,
+        WebThickness=tw / scale,
+        FlangeThickness=tf / scale,
     )
 
 
@@ -195,13 +198,14 @@ def create_lh_profile(
     tf: float,
     name: str | None = None,
 ):
+    scale = ifcopenshell.util.unit.calculate_unit_scale(f)  # file unit -> m
     return f.create_entity(
         "IfcLShapeProfileDef",
         ProfileType="AREA",
         ProfileName=name,
-        OverallHeight=h,
-        OverallWidth=b,
-        Thickness=tw,
+        Depth=h / scale,
+        Width=b / scale,
+        Thickness=tw / scale,
         FilletRadius=0.0,
     )
 
@@ -214,14 +218,15 @@ def create_u_profile(
     tf: float,
     name: str | None = None,
 ):
+    scale = ifcopenshell.util.unit.calculate_unit_scale(f)  # file unit -> m
     return f.create_entity(
         "IfcUShapeProfileDef",
         ProfileType="AREA",
         ProfileName=name,
-        OverallHeight=h,
-        OverallWidth=b,
-        WebThickness=tw,
-        FlangeThickness=tf,
+        Depth=h / scale,
+        FlangeWidth=b / scale,
+        WebThickness=tw / scale,
+        FlangeThickness=tf / scale,
         FlangeSlope=0.0,
     )
 
@@ -231,8 +236,8 @@ def create_circular_profile(
     d: float,
     name: str | None = None,
 ):
-    radius = d / 2.0
-    outer_curve = f.create_entity("IfcCircle", Radius=radius)
+    scale = ifcopenshell.util.unit.calculate_unit_scale(f)  # file unit -> m
+    radius = (d / 2.0) / scale
     return f.create_entity(
         "IfcCircleProfileDef",
         ProfileType="AREA",
@@ -253,13 +258,14 @@ def create_rectangle_hollow_profile(
     tf: float,
     name: str | None = None,
 ):
+    scale = ifcopenshell.util.unit.calculate_unit_scale(f)  # file unit -> m
     return f.create_entity(
         "IfcRectangleHollowProfileDef",
         ProfileType="AREA",
         ProfileName=name,
-        OverallWidth=b,
-        OverallHeight=h,
-        WallThickness=tw,
+        XDim=b / scale,
+        YDim=h / scale,
+        WallThickness=tw / scale,
         InnerFilletRadius=0.0,
     )
 
@@ -325,8 +331,15 @@ def create_beam(
     position=(0.0, 0.0, 0.0),
     rotation_z: float = 0.0,
     storey_guid: str | None = None,
+    profile: str | None = None,
+    shape: str | None = None,
+    h: float | None = None,
+    b: float | None = None,
+    tw: float | None = None,
+    tf: float | None = None,
 ) -> ifcopenshell.entity_instance:
-    """Cria um IfcBeam de seção retangular extrudada na horizontal (eixo X).
+    """Cria um IfcBeam extrudado na horizontal (eixo X), com perfil real de
+    acordo com os parâmetros recebidos (mesma lógica de `create_column`).
 
     O perfil é extrudado ao longo do +Z local; o placement aplica Ry(90°) para
     deitar a viga (eixo local +Z -> +X do mundo), depois Rz(rotation_z) e a
@@ -337,12 +350,27 @@ def create_beam(
         beam = ifcopenshell.api.run(
             "root.create_entity", f, ifc_class="IfcBeam", name=name
         )
-        profile = rect_profile(f, width, depth)
+        if shape and h and b and tw and tf:
+            if shape == "I" or shape == "H":
+                profile_entity = create_ih_profile(f, h, b, tw, tf, name=profile)
+            elif shape == "U":
+                profile_entity = create_u_profile(f, h, b, tw, tf, name=profile)
+            elif shape == "L":
+                profile_entity = create_lh_profile(f, h, b, tw, tf, name=profile)
+            elif shape == "Tubular Circ.":
+                profile_entity = create_circular_profile(f, h, name=profile)
+            elif shape == "Tubular Ret.":
+                profile_entity = create_rectangle_hollow_profile(f, b, h, tw, tf, name=profile)
+            else:
+                profile_entity = rect_profile(f, width, depth)
+        else:
+            profile_entity = rect_profile(f, width, depth)
+
         rep = ifcopenshell.api.run(
             "geometry.add_profile_representation",
             f,
             context=body,
-            profile=profile,
+            profile=profile_entity,
             depth=length,
         )
         ifcopenshell.api.run(

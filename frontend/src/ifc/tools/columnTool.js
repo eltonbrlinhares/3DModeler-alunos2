@@ -4,6 +4,11 @@
  * Máquina de estados: base (interseção de grid) → height (arrasta a altura com
  * snap nos níveis superiores) → conclui. A seção (width×depth) vem do
  * formulário; a altura é definida pelo mouse (sem campo no formulário).
+ *
+ * O eixo vertical da coluna sempre sobe a partir do ponto clicado (sem
+ * ambiguidade de topo/centro/base). `ctx.form.refX`/`ctx.form.refY`
+ * ("start" | "center" | "end") definem por qual ponto da SEÇÃO em planta esse
+ * eixo passa — ver columnBox.js.
  */
 import { columnBox } from "../geometry/columnBox.js";
 import { WALL_MIN_HEIGHT } from "../insertion/constants.js";
@@ -16,7 +21,9 @@ const status = (snapLevel, height) =>
 function drawColumn(ctx, height, snapLevel) {
   const width = Number(ctx.form.width) || 0.4;
   const depth = Number(ctx.form.depth) || 0.4;
-  const geo = columnBox(ctx.base, width, depth, height);
+  const refX = ctx.form.refX || "center";
+  const refY = ctx.form.refY || "center";
+  const geo = columnBox(ctx.base, width, depth, height, refX, refY);
   if (!geo) return;
   const snapped = Boolean(snapLevel);
   ctx.preview.begin("ifc-column-construction-preview").solid(geo, {
@@ -27,6 +34,15 @@ function drawColumn(ctx, height, snapLevel) {
   ctx.height = height;
 }
 
+// deslocamento (em X/Y) do CENTRO da seção (o que o backend espera em
+// `position`) em relação ao ponto clicado, conforme por qual ponto da seção
+// esse ponto passa
+function centerOffset(size, ref) {
+  if (ref === "start") return size / 2;
+  if (ref === "end") return -size / 2;
+  return 0; // "center" (padrão)
+}
+
 function finishColumn(ctx) {
   if (!ctx.base) return;
   const width = Number(ctx.form.width) || 0.4;
@@ -35,7 +51,12 @@ function finishColumn(ctx) {
     WALL_MIN_HEIGHT,
     Number(ctx.height) || Number(ctx.form.height) || 3
   );
+  const refX = ctx.form.refX || "center";
+  const refY = ctx.form.refY || "center";
   const origin = ctx.base.clone();
+  origin.x += centerOffset(width, refX);
+  origin.y += centerOffset(depth, refY);
+  const { profile, shape, h, b, tw, tf } = ctx.form;
   ctx.commit(
     ctx.api.createColumn,
     {
@@ -46,6 +67,11 @@ function finishColumn(ctx) {
       position: [origin.x, origin.y, origin.z],
       rotation_z: 0,
       storey_guid: ctx.level.guid,
+      // perfil real (I/H/U/L/tubular), quando um perfil de catálogo ou
+      // personalizado estiver selecionado no formulário (aba "Metálica")
+      ...(profile && shape && h && b && tw && tf
+        ? { profile, shape, h: Number(h), b: Number(b), tw: Number(tw), tf: Number(tf) }
+        : {}),
     },
     "Pilar"
   );
@@ -57,7 +83,7 @@ export const columnTool = {
   prefix: "C",
   // altura é definida pelo mouse → sem campo "height" no formulário
   fields: ["width", "depth"],
-  defaults: { width: 0.4, depth: 0.4, height: 3 },
+  defaults: { width: 0.4, depth: 0.4, height: 3, refX: "center", refY: "center" },
   minIntersections: 1,
 
   start(ctx) {

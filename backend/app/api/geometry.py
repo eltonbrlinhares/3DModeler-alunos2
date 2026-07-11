@@ -92,6 +92,12 @@ def create_beam(req: CreateBeamRequest, entry: ModelEntry = Depends(get_entry)):
             position=tuple(req.position),
             rotation_z=req.rotation_z,
             storey_guid=req.storey_guid,
+            profile=req.profile,
+            shape=req.shape,
+            h=req.h,
+            b=req.b,
+            tw=req.tw,
+            tf=req.tf,
         )
     except RuntimeError as e:
         raise HTTPException(400, f"falha ao criar viga: {e}")
