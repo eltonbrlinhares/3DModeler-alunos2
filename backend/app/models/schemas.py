@@ -111,6 +111,48 @@ class CreateFootingRequest(BaseModel):
     pile_diameter: float | None = Field(default=None, gt=0)
 
 
+class EditColumnRequest(BaseModel):
+    profile: str | None = None
+    shape: str | None = None
+    h: float | None = Field(default=None, gt=0)
+    b: float | None = Field(default=None, gt=0)
+    tw: float | None = Field(default=None, gt=0)
+    tf: float | None = Field(default=None, gt=0)
+    width: float = Field(gt=0)
+    depth: float = Field(gt=0)
+    height: float = Field(gt=0)
+
+
+class EditBeamRequest(BaseModel):
+    profile: str | None = None
+    shape: str | None = None
+    h: float | None = Field(default=None, gt=0)
+    b: float | None = Field(default=None, gt=0)
+    tw: float | None = Field(default=None, gt=0)
+    tf: float | None = Field(default=None, gt=0)
+    width: float = Field(gt=0)
+    depth: float = Field(gt=0)
+    length: float = Field(gt=0)
+
+
+class EditFootingRequest(BaseModel):
+    base_width: float = Field(gt=0)
+    base_length: float = Field(gt=0)
+    height: float = Field(gt=0)
+    top_width: float | None = Field(default=None, gt=0)
+    top_length: float | None = Field(default=None, gt=0)
+    base_height: float = Field(default=0.0, ge=0)
+    pedestal_width: float | None = Field(default=None, gt=0)
+    pedestal_length: float | None = Field(default=None, gt=0)
+    pedestal_height: float = Field(default=0.0, ge=0)
+    pile_count: int | None = Field(default=None, gt=0)
+    pile_diameter: float | None = Field(default=None, gt=0)
+
+
+class EditSlabRequest(BaseModel):
+    thickness: float = Field(gt=0)
+
+
 class CreateColumnRequest(BaseModel):
     name: str | None = None
     profile: str | None = None

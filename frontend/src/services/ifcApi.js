@@ -71,6 +71,19 @@ export const ifcApi = {
     req("POST", `/ifc/models/${id}/geometry/placement`, params),
   editDimensions: (id, params) =>
     req("POST", `/ifc/models/${id}/geometry/dimensions`, params),
+  editColumn: (id, guid, params) =>
+    req("PATCH", `/ifc/models/${id}/geometry/column/${guid}`, params),
+  editBeam: (id, guid, params) =>
+    req("PATCH", `/ifc/models/${id}/geometry/beam/${guid}`, params),
+  editFooting: (id, guid, params) =>
+    req("PATCH", `/ifc/models/${id}/geometry/footing/${guid}`, params),
+  editSlab: (id, guid, params) =>
+    req("PATCH", `/ifc/models/${id}/geometry/slab/${guid}`, params),
+
+  // ---------- conectividade física (apoio/cruzamento entre elementos) ----------
+  connections: (id, guid) => req("GET", `/ifc/models/${id}/connectivity/${guid}`),
+  resyncConnections: (id, guid) =>
+    req("POST", `/ifc/models/${id}/connectivity/${guid}/resync`),
 
   // ---------- dimensionamento preliminar (fundação) ----------
   // stateless: sem model_id, so calcula uma sugestao de geometria

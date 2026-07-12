@@ -12,6 +12,7 @@ from app.models.schemas import (
     EditAttributesRequest,
     EditPsetRequest,
 )
+from app.services import connectivity_service as conn
 from app.services import edit_service
 from app.services import geometry_service as geo
 from app.services.ifc_service import ModelEntry
@@ -57,6 +58,7 @@ def create_wall(req: CreateWallRequest, entry: ModelEntry = Depends(get_entry)):
 @router.post("/delete")
 def delete_entity(req: DeleteEntityRequest, entry: ModelEntry = Depends(get_entry)):
     try:
+        conn.remove_connections_for(entry, req.guid)
         edit_service.delete_product(entry, req.guid)
     except RuntimeError as e:
         raise HTTPException(404, f"guid não encontrado: {e}")

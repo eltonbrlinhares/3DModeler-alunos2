@@ -9,6 +9,7 @@ a representação — ver estrutura_pedagogica_backend.md.
 """
 from __future__ import annotations
 
+import json
 import math
 
 import numpy as np
@@ -79,6 +80,63 @@ def place_product(f, product, matrix, storey_guid: str | None = None) -> None:
         "geometry.edit_object_placement", f, product=product, matrix=matrix
     )
     _assign_storey(f, product, storey_guid)
+
+
+PARAMS_PSET_NAME = "Pset_ParametricSource"
+
+
+def _find_pset(product, name: str):
+    """Procura um IfcPropertySet já associado ao produto pelo nome."""
+    for rel in getattr(product, "IsDefinedBy", None) or ():
+        if rel.is_a("IfcRelDefinesByProperties"):
+            pdef = rel.RelatingPropertyDefinition
+            if pdef.is_a("IfcPropertySet") and pdef.Name == name:
+                return pdef
+    return None
+
+
+def write_params(f: ifcopenshell.file, product, params: dict) -> None:
+    """Grava os parâmetros de criação/edição num Pset próprio (um único campo
+    de texto JSON). Isso é o que permite reabrir um elemento já inserido para
+    edição com o formulário pré-preenchido: a geometria final (malha/extrusão)
+    não é suficiente para recuperar, por exemplo, qual perfil de catálogo foi
+    usado ou o afunilamento de uma sapata. Idempotente: reaproveita o Pset se
+    já existir, em vez de duplicar.
+    """
+    pset = _find_pset(product, PARAMS_PSET_NAME)
+    if pset is None:
+        pset = ifcopenshell.api.run(
+            "pset.add_pset", f, product=product, name=PARAMS_PSET_NAME
+        )
+    ifcopenshell.api.run(
+        "pset.edit_pset", f, pset=pset, properties={"ParamsJSON": json.dumps(params)}
+    )
+
+
+def get_params_f(f: ifcopenshell.file, guid: str) -> dict | None:
+    """Versão de `get_params` que recebe o `ifcopenshell.file` diretamente —
+    para uso de dentro de um `with mutate(entry) as f:` já aberto (ex.: o
+    serviço de conectividade), sem precisar de um `ModelEntry`."""
+    inst = f.by_guid(guid)
+    pset = _find_pset(inst, PARAMS_PSET_NAME)
+    if pset is None:
+        return None
+    for prop in getattr(pset, "HasProperties", None) or ():
+        if prop.Name == "ParamsJSON" and prop.is_a("IfcPropertySingleValue"):
+            raw = prop.NominalValue.wrappedValue if prop.NominalValue else None
+            if raw:
+                try:
+                    return json.loads(raw)
+                except (TypeError, ValueError):
+                    return None
+    return None
+
+
+def get_params(entry: ModelEntry, guid: str) -> dict | None:
+    """Lê de volta os parâmetros gravados por `write_params` (ou None se o
+    elemento não tiver o Pset — ex.: modelo criado antes desta funcionalidade,
+    ou upload de um IFC externo)."""
+    return get_params_f(entry.file, guid)
 
 
 def rect_profile(f, width: float, depth: float):
@@ -173,6 +231,15 @@ def create_slab(
             "geometry.assign_representation", f, product=slab, representation=rep
         )
         place_product(f, slab, matrix_from(position, rotation_z), storey_guid)
+        write_params(
+            f,
+            slab,
+            {
+                "thickness": thickness,
+                "polyline": [list(p) for p in slab_polyline],
+                "predefined_type": predefined_type,
+            },
+        )
     return slab
 
 
@@ -278,6 +345,38 @@ def create_rectangle_hollow_profile(
     )
 
 
+def _profile_entity_for(
+    f,
+    width: float,
+    depth: float,
+    profile: str | None,
+    shape: str | None,
+    h: float | None,
+    b: float | None,
+    tw: float | None,
+    tf: float | None,
+):
+    """Escolhe/gera o IfcProfileDef de acordo com `shape` (perfil real de
+    catálogo/personalizado) ou cai para um retângulo simples (concreto) se
+    `shape`/`h`/`b`/`tw`/`tf` não vierem completos. Usado por `create_column`,
+    `create_beam` e as respectivas `edit_*_dimensions`, para garantir que
+    criação e edição gerem exatamente o mesmo perfil a partir dos mesmos
+    parâmetros.
+    """
+    if shape and h and b and tw and tf:
+        if shape == "I" or shape == "H":
+            return create_ih_profile(f, h, b, tw, tf, name=profile)
+        if shape == "U":
+            return create_u_profile(f, h, b, tw, tf, name=profile)
+        if shape == "L":
+            return create_lh_profile(f, h, b, tw, tf, name=profile)
+        if shape == "Tubular Circ.":
+            return create_circular_profile(f, h, name=profile)
+        if shape == "Tubular Ret.":
+            return create_rectangle_hollow_profile(f, b, h, tw, tf, name=profile)
+    return rect_profile(f, width, depth)
+
+
 def create_column(
     entry: ModelEntry,
     name: str | None,
@@ -300,22 +399,7 @@ def create_column(
         column = ifcopenshell.api.run(
             "root.create_entity", f, ifc_class="IfcColumn", name=name
         )
-        if shape and h and b and tw and tf:
-            if shape == "I" or shape == "H":
-                profile_entity = create_ih_profile(f, h, b, tw, tf, name=profile)
-            elif shape == "U":
-                profile_entity = create_u_profile(f, h, b, tw, tf, name=profile)
-            elif shape == "L":
-                profile_entity = create_lh_profile(f, h, b, tw, tf, name=profile)
-            elif shape == "Tubular Circ.":
-                profile_entity = create_circular_profile(f, h, name=profile)
-            elif shape == "Tubular Ret.":
-                profile_entity = create_rectangle_hollow_profile(f, b, h, tw, tf, name=profile)
-            else:
-                profile_entity = rect_profile(f, width, depth)
-        else:
-            profile_entity = rect_profile(f, width, depth)
-
+        profile_entity = _profile_entity_for(f, width, depth, profile, shape, h, b, tw, tf)
         rep = ifcopenshell.api.run(
             "geometry.add_profile_representation",
             f,
@@ -327,6 +411,15 @@ def create_column(
             "geometry.assign_representation", f, product=column, representation=rep
         )
         place_product(f, column, matrix_from(position, rotation_z), storey_guid)
+        write_params(
+            f,
+            column,
+            {
+                "width": width, "depth": depth, "height": height,
+                "profile": profile, "shape": shape,
+                "h": h, "b": b, "tw": tw, "tf": tf,
+            },
+        )
     return column
 
 
@@ -358,22 +451,7 @@ def create_beam(
         beam = ifcopenshell.api.run(
             "root.create_entity", f, ifc_class="IfcBeam", name=name
         )
-        if shape and h and b and tw and tf:
-            if shape == "I" or shape == "H":
-                profile_entity = create_ih_profile(f, h, b, tw, tf, name=profile)
-            elif shape == "U":
-                profile_entity = create_u_profile(f, h, b, tw, tf, name=profile)
-            elif shape == "L":
-                profile_entity = create_lh_profile(f, h, b, tw, tf, name=profile)
-            elif shape == "Tubular Circ.":
-                profile_entity = create_circular_profile(f, h, name=profile)
-            elif shape == "Tubular Ret.":
-                profile_entity = create_rectangle_hollow_profile(f, b, h, tw, tf, name=profile)
-            else:
-                profile_entity = rect_profile(f, width, depth)
-        else:
-            profile_entity = rect_profile(f, width, depth)
-
+        profile_entity = _profile_entity_for(f, width, depth, profile, shape, h, b, tw, tf)
         rep = ifcopenshell.api.run(
             "geometry.add_profile_representation",
             f,
@@ -395,6 +473,15 @@ def create_beam(
         )
         matrix = matrix_from(position, rotation_z) @ orient
         place_product(f, beam, matrix, storey_guid)
+        write_params(
+            f,
+            beam,
+            {
+                "width": width, "depth": depth, "length": length,
+                "profile": profile, "shape": shape,
+                "h": h, "b": b, "tw": tw, "tf": tf,
+            },
+        )
     return beam
 
 
@@ -502,6 +589,8 @@ def create_footing(
     rotation_z: float = 0.0,
     storey_guid: str | None = None,
     predefined_type: str = "PAD_FOOTING",
+    pile_count: int | None = None,
+    pile_diameter: float | None = None,
 ) -> ifcopenshell.entity_instance:
     """Cria um IfcFooting como malha (`geometry.add_mesh_representation`):
 
@@ -549,6 +638,36 @@ def create_footing(
             "geometry.assign_representation", f, product=footing, representation=rep
         )
         place_product(f, footing, matrix_from(position, rotation_z), storey_guid)
+        if pile_count:
+            try:
+                pile_pset = ifcopenshell.api.run(
+                    "pset.add_pset", f, product=footing, name="Pset_FoundationCommon"
+                )
+                ifcopenshell.api.run(
+                    "pset.edit_pset",
+                    f,
+                    pset=pile_pset,
+                    properties={
+                        "PileCount": pile_count,
+                        **({"PileDiameter": pile_diameter} if pile_diameter else {}),
+                    },
+                )
+            except Exception:
+                pass  # metadados informativos; nao bloqueiam a criacao da geometria
+        write_params(
+            f,
+            footing,
+            {
+                "predefined_type": predefined_type,
+                "base_width": base_width, "base_length": base_length,
+                "height": height,
+                "top_width": top_width, "top_length": top_length,
+                "base_height": base_height,
+                "pedestal_width": pedestal_width, "pedestal_length": pedestal_length,
+                "pedestal_height": pedestal_height,
+                "pile_count": pile_count, "pile_diameter": pile_diameter,
+            },
+        )
     return footing
 
 
@@ -613,6 +732,30 @@ def translate_product(entry: ModelEntry, guid: str, delta) -> None:
     transform_product(entry, guid, translate=delta)
 
 
+def _replace_body_representation(f, product, new_rep) -> None:
+    """Troca a representação Body de um produto por outra já pronta
+    (`new_rep`), preservando GlobalId e ObjectPlacement.
+
+    Padrão comum a toda edição de dimensões "em vivo" (sem apagar/refazer o
+    elemento): remove a representação Body anterior (se houver) e associa a
+    nova. Usado por todas as `edit_*_dimensions` abaixo.
+    """
+    old = ifcopenshell.util.representation.get_representation(
+        product, "Model", "Body", "MODEL_VIEW"
+    )
+    if old is not None:
+        ifcopenshell.api.run(
+            "geometry.unassign_representation",
+            f,
+            product=product,
+            representation=old,
+        )
+        ifcopenshell.api.run("geometry.remove_representation", f, representation=old)
+    ifcopenshell.api.run(
+        "geometry.assign_representation", f, product=product, representation=new_rep
+    )
+
+
 def edit_wall_dimensions(
     entry: ModelEntry,
     guid: str,
@@ -627,19 +770,6 @@ def edit_wall_dimensions(
     with mutate(entry) as f:
         wall = f.by_guid(guid)
         body = get_body_context(f)
-        old = ifcopenshell.util.representation.get_representation(
-            wall, "Model", "Body", "MODEL_VIEW"
-        )
-        if old is not None:
-            ifcopenshell.api.run(
-                "geometry.unassign_representation",
-                f,
-                product=wall,
-                representation=old,
-            )
-            ifcopenshell.api.run(
-                "geometry.remove_representation", f, representation=old
-            )
         rep = ifcopenshell.api.run(
             "geometry.add_wall_representation",
             f,
@@ -648,6 +778,176 @@ def edit_wall_dimensions(
             height=height,
             thickness=thickness,
         )
-        ifcopenshell.api.run(
-            "geometry.assign_representation", f, product=wall, representation=rep
+        _replace_body_representation(f, wall, rep)
+
+
+def edit_column_dimensions(
+    entry: ModelEntry,
+    guid: str,
+    width: float,
+    depth: float,
+    height: float,
+    profile: str | None = None,
+    shape: str | None = None,
+    h: float | None = None,
+    b: float | None = None,
+    tw: float | None = None,
+    tf: float | None = None,
+) -> None:
+    """Regenera a seção/altura de um pilar já existente (mesma lógica de
+    `create_column`), sem apagar o elemento — placement preservado."""
+    with mutate(entry) as f:
+        column = f.by_guid(guid)
+        body = get_body_context(f)
+        profile_entity = _profile_entity_for(f, width, depth, profile, shape, h, b, tw, tf)
+        rep = ifcopenshell.api.run(
+            "geometry.add_profile_representation",
+            f,
+            context=body,
+            profile=profile_entity,
+            depth=height,
         )
+        _replace_body_representation(f, column, rep)
+        write_params(
+            f,
+            column,
+            {
+                "width": width, "depth": depth, "height": height,
+                "profile": profile, "shape": shape,
+                "h": h, "b": b, "tw": tw, "tf": tf,
+            },
+        )
+
+
+def edit_beam_dimensions(
+    entry: ModelEntry,
+    guid: str,
+    width: float,
+    depth: float,
+    length: float,
+    profile: str | None = None,
+    shape: str | None = None,
+    h: float | None = None,
+    b: float | None = None,
+    tw: float | None = None,
+    tf: float | None = None,
+) -> None:
+    """Regenera a seção/comprimento de uma viga já existente (mesma lógica de
+    `create_beam`), sem apagar o elemento — placement/orientação preservados.
+
+    `length` altera o comprimento da extrusão ao longo do eixo local já
+    definido no placement (não move a viga nem reposiciona suas pontas).
+    """
+    with mutate(entry) as f:
+        beam = f.by_guid(guid)
+        body = get_body_context(f)
+        profile_entity = _profile_entity_for(f, width, depth, profile, shape, h, b, tw, tf)
+        rep = ifcopenshell.api.run(
+            "geometry.add_profile_representation",
+            f,
+            context=body,
+            profile=profile_entity,
+            depth=length,
+        )
+        _replace_body_representation(f, beam, rep)
+        write_params(
+            f,
+            beam,
+            {
+                "width": width, "depth": depth, "length": length,
+                "profile": profile, "shape": shape,
+                "h": h, "b": b, "tw": tw, "tf": tf,
+            },
+        )
+
+
+def edit_footing_dimensions(
+    entry: ModelEntry,
+    guid: str,
+    base_width: float,
+    base_length: float,
+    height: float,
+    top_width: float | None = None,
+    top_length: float | None = None,
+    base_height: float = 0.0,
+    pedestal_width: float | None = None,
+    pedestal_length: float | None = None,
+    pedestal_height: float = 0.0,
+    pile_count: int | None = None,
+    pile_diameter: float | None = None,
+) -> None:
+    """Regenera a malha de uma fundação já existente (mesma lógica de
+    `create_footing`), sem apagar o elemento — placement e `predefined_type`
+    (sapata/bloco) preservados.
+    """
+    top_width = top_width if top_width is not None else base_width
+    top_length = top_length if top_length is not None else base_length
+    with mutate(entry) as f:
+        footing = f.by_guid(guid)
+        body = get_body_context(f)
+        verts, faces = _footing_mesh(
+            base_width, base_length, top_width, top_length, height,
+            pedestal_width, pedestal_length, pedestal_height, base_height,
+        )
+        rep = ifcopenshell.api.run(
+            "geometry.add_mesh_representation",
+            f, context=body, vertices=[verts], faces=[faces],
+        )
+        _replace_body_representation(f, footing, rep)
+        if pile_count:
+            try:
+                pile_pset = ifcopenshell.api.run(
+                    "pset.add_pset", f, product=footing, name="Pset_FoundationCommon"
+                )
+                ifcopenshell.api.run(
+                    "pset.edit_pset",
+                    f,
+                    pset=pile_pset,
+                    properties={
+                        "PileCount": pile_count,
+                        **({"PileDiameter": pile_diameter} if pile_diameter else {}),
+                    },
+                )
+            except Exception:
+                pass
+        write_params(
+            f,
+            footing,
+            {
+                "predefined_type": footing.PredefinedType,
+                "base_width": base_width, "base_length": base_length,
+                "height": height,
+                "top_width": top_width, "top_length": top_length,
+                "base_height": base_height,
+                "pedestal_width": pedestal_width, "pedestal_length": pedestal_length,
+                "pedestal_height": pedestal_height,
+                "pile_count": pile_count, "pile_diameter": pile_diameter,
+            },
+        )
+
+
+def edit_slab_dimensions(
+    entry: ModelEntry,
+    guid: str,
+    thickness: float,
+) -> None:
+    """Regenera a espessura de uma laje/radier já existente, mantendo o
+    contorno (polyline) original — o formulário de edição não permite mudar a
+    planta, só a espessura (a planta continua editável recriando o elemento a
+    partir do esboço 2D).
+    """
+    with mutate(entry) as f:
+        slab = f.by_guid(guid)
+        body = get_body_context(f)
+        params = get_params(entry, guid) or {}
+        polyline = [tuple(p) for p in params.get("polyline", [])]
+        if len(polyline) < 3:
+            raise RuntimeError(
+                "laje sem parâmetros de origem gravados; recrie-a para habilitar a edição"
+            )
+        rep = ifcopenshell.api.run(
+            "geometry.add_slab_representation",
+            f, context=body, depth=thickness, polyline=polyline,
+        )
+        _replace_body_representation(f, slab, rep)
+        write_params(f, slab, {**params, "thickness": thickness})

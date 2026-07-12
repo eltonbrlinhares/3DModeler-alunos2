@@ -79,11 +79,23 @@ export default function IfcPanel({
   const [elements, setElements] = useState([]);
   const [selected, setSelected] = useState(null); // { guid, type, name }
   const [detail, setDetail] = useState(null);
+  const [connections, setConnections] = useState([]);
   const [status, setStatus] = useState("Sem modelo. Crie ou faça upload.");
   const [busy, setBusy] = useState(false);
   const [elemType, setElemType] = useState("wall");
   const [form, setForm] = useState({ ...ELEMENT_FORMS.wall.defaults });
   const [dims, setDims] = useState({ length: 5, height: 3, thickness: 0.2 });
+  // ── edição "em vivo" de coluna/viga/fundação/laje já inseridas (sem
+  // apagar/refazer) — formulário próprio, populado a partir do
+  // Pset_ParametricSource gravado na criação. Ver selectGuid(). ──
+  const [editForm, setEditForm] = useState({});
+  const [editKind, setEditKind] = useState("concrete"); // "concrete" | "steel"
+  const [editSteelFamily, setEditSteelFamily] = useState(DEFAULT_STEEL_FAMILY);
+  const [editSteelProfileValue, setEditSteelProfileValue] = useState("");
+  const [editProfileCustom, setEditProfileCustom] = useState({
+    h: 300, b: 150, tw: 6.3, tf: 9.5, shape: "I",
+  });
+  const [editUsePedestal, setEditUsePedestal] = useState(false);
   const [rename, setRename] = useState("");
   const [insertMode, setInsertMode] = useState(null);
   // aba da coluna: "concrete" (dimensões livres) ou "steel" (catálogo de perfis)
@@ -570,6 +582,70 @@ export default function IfcPanel({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [beamSteelFamily]);
 
+  // ── formulário de EDIÇÃO (elemento já inserido, selecionado no canvas) ──
+  // mesma lógica das abas Concreto/Metálica da inserção, mas escrevendo em
+  // `editForm` em vez de `form`, e só quando o elemento selecionado é do
+  // tipo compatível (coluna ou viga).
+  useEffect(() => {
+    if (!selected || (selected.type !== "IfcColumn" && selected.type !== "IfcBeam")) return;
+    if (editKind === "concrete") {
+      setEditForm((f) => ({ ...f, profile: null, shape: null, h: null, b: null, tw: null, tf: null }));
+      return;
+    }
+    if (editSteelFamily === "custom") {
+      setEditForm((f) => ({
+        ...f,
+        width: editProfileCustom.b / 1000,
+        depth: editProfileCustom.h / 1000,
+        profile: "custom",
+        shape: editProfileCustom.shape,
+        h: editProfileCustom.h / 1000,
+        b: editProfileCustom.b / 1000,
+        tw: editProfileCustom.tw / 1000,
+        tf: editProfileCustom.tf / 1000,
+      }));
+      return;
+    }
+    const families = selected.type === "IfcBeam" ? STEEL_BEAM_FAMILIES : STEEL_COLUMN_FAMILIES;
+    const family = families[editSteelFamily];
+    const item =
+      family?.profiles.find((p) => p.value === editSteelProfileValue) ?? family?.profiles[0];
+    if (!item) return;
+    setEditForm((f) => ({
+      ...f,
+      width: item.b,
+      depth: item.h,
+      profile: item.value,
+      shape: family.shape,
+      h: item.h,
+      b: item.b,
+      tw: item.tw,
+      tf: item.tf,
+    }));
+  }, [
+    selected,
+    editKind,
+    editSteelFamily,
+    editSteelProfileValue,
+    editProfileCustom.b,
+    editProfileCustom.h,
+    editProfileCustom.tw,
+    editProfileCustom.tf,
+    editProfileCustom.shape,
+  ]);
+
+  // ao trocar de família de perfil metálico no formulário de EDIÇÃO,
+  // seleciona o primeiro perfil dela (evita ficar com um valor inválido)
+  useEffect(() => {
+    if (editSteelFamily === "custom") return;
+    const families = selected?.type === "IfcBeam" ? STEEL_BEAM_FAMILIES : STEEL_COLUMN_FAMILIES;
+    const profiles = families[editSteelFamily]?.profiles ?? [];
+    if (!profiles.some((p) => p.value === editSteelProfileValue)) {
+      setEditSteelProfileValue(profiles[0]?.value ?? "");
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [editSteelFamily]);
+
   // referência do eixo (topo/centro/base) que o clique na linha de grid
   // representa na seção da viga — repassada ao form para o beamTool.js usar
   useEffect(() => {
@@ -623,12 +699,60 @@ export default function IfcPanel({
     setElements(els);
   }, []);
 
+  // Reconstrói o estado do formulário de EDIÇÃO a partir do
+  // Pset_ParametricSource do elemento selecionado (gravado por `write_params`
+  // no backend a cada criação/edição). Sem esse Pset — ex.: elemento de um
+  // IFC externo, ou criado antes desta funcionalidade — a edição em vivo
+  // simplesmente não fica disponível para aquele elemento específico.
+  const applyEditParamsFromDetail = useCallback((d) => {
+    const raw = d?.psets?.Pset_ParametricSource?.ParamsJSON;
+    let params = null;
+    if (raw) {
+      try {
+        params = JSON.parse(raw);
+      } catch {
+        params = null;
+      }
+    }
+    setEditForm(params || {});
+    setEditUsePedestal(Boolean(params?.pedestal_height));
+    if (!params || !params.shape) {
+      setEditKind("concrete");
+      return;
+    }
+    if (params.profile === "custom") {
+      setEditKind("steel");
+      setEditSteelFamily("custom");
+      setEditProfileCustom({
+        h: (params.h ?? 0) * 1000,
+        b: (params.b ?? 0) * 1000,
+        tw: (params.tw ?? 0) * 1000,
+        tf: (params.tf ?? 0) * 1000,
+        shape: params.shape,
+      });
+      return;
+    }
+    const families = d.type === "IfcBeam" ? STEEL_BEAM_FAMILIES : STEEL_COLUMN_FAMILIES;
+    const familyKey = Object.keys(families).find((k) =>
+      families[k].profiles.some((p) => p.value === params.profile)
+    );
+    if (familyKey) {
+      setEditKind("steel");
+      setEditSteelFamily(familyKey);
+      setEditSteelProfileValue(params.profile);
+    } else {
+      setEditKind("concrete");
+    }
+  }, []);
+
   const selectGuid = useCallback(async (guid) => {
     const mgr = mgrRef.current;
     mgr?.setSelected(guid);
     if (!guid) {
       setSelected(null);
       setDetail(null);
+      setEditForm({});
+      setConnections([]);
       transformRef.current?.detach();
       return;
     }
@@ -641,10 +765,17 @@ export default function IfcPanel({
       const d = await ifcApi.entity(modelIdRef.current, guid);
       setDetail(d);
       setRename(d.attributes?.Name ?? info.name ?? "");
+      applyEditParamsFromDetail(d);
     } catch (e) {
       console.warn(e);
     }
-  }, []);
+    try {
+      const c = await ifcApi.connections(modelIdRef.current, guid);
+      setConnections(c.connections ?? []);
+    } catch {
+      setConnections([]); // tipo sem conectividade rastreada (parede, etc.) — normal
+    }
+  }, [applyEditParamsFromDetail]);
 
   const firstStorey = async (id) => {
     try {
@@ -1185,6 +1316,14 @@ export default function IfcPanel({
       mgrRef.current?.replaceProduct(pj);
       const fresh = mgrRef.current?.getMesh(guid);
       if (fresh) transformRef.current?.attach(fresh);
+      if (selectedRef.current?.guid === guid) {
+        try {
+          const c = await ifcApi.connections(modelIdRef.current, guid);
+          setConnections(c.connections ?? []);
+        } catch {
+          setConnections([]);
+        }
+      }
       setStatus("Posição salva.");
       pushHistory(1);
     } catch (e) {
@@ -1248,6 +1387,117 @@ export default function IfcPanel({
     }
   };
 
+  // refaz a malha do produto editado e re-sincroniza o detail (psets) —
+  // usado por todo applyXEdit abaixo
+  const refreshAfterEdit = async (guid) => {
+    mgrRef.current?.replaceProduct(await ifcApi.productMesh(modelId, guid));
+    const fresh = mgrRef.current?.getMesh(guid);
+    if (fresh) transformRef.current?.attach(fresh);
+    try {
+      const d = await ifcApi.entity(modelId, guid);
+      setDetail(d);
+    } catch (e) {
+      console.warn(e);
+    }
+    try {
+      const c = await ifcApi.connections(modelId, guid);
+      setConnections(c.connections ?? []);
+    } catch {
+      setConnections([]);
+    }
+    setBusy(false);
+    pushHistory(1);
+  };
+
+  const applyColumnEdit = async () => {
+    const guid = selectedRef.current?.guid;
+    if (!guid) return;
+    try {
+      setBusy(true);
+      const { width, depth, height, profile, shape, h, b, tw, tf } = editForm;
+      await ifcApi.editColumn(modelId, guid, {
+        width: Number(width),
+        depth: Number(depth),
+        height: Number(height),
+        ...(profile && shape && h && b && tw && tf
+          ? { profile, shape, h: Number(h), b: Number(b), tw: Number(tw), tf: Number(tf) }
+          : {}),
+      });
+      setStatus("Pilar atualizado.");
+      await refreshAfterEdit(guid);
+    } catch (e) {
+      fail(e);
+    }
+  };
+
+  const applyBeamEdit = async () => {
+    const guid = selectedRef.current?.guid;
+    if (!guid) return;
+    try {
+      setBusy(true);
+      const { width, depth, length, profile, shape, h, b, tw, tf } = editForm;
+      await ifcApi.editBeam(modelId, guid, {
+        width: Number(width),
+        depth: Number(depth),
+        length: Number(length),
+        ...(profile && shape && h && b && tw && tf
+          ? { profile, shape, h: Number(h), b: Number(b), tw: Number(tw), tf: Number(tf) }
+          : {}),
+      });
+      setStatus("Viga atualizada.");
+      await refreshAfterEdit(guid);
+    } catch (e) {
+      fail(e);
+    }
+  };
+
+  const applyFootingEdit = async () => {
+    const guid = selectedRef.current?.guid;
+    if (!guid) return;
+    try {
+      setBusy(true);
+      const baseWidth = Number(editForm.base_width);
+      const baseLength = Number(editForm.base_length);
+      await ifcApi.editFooting(modelId, guid, {
+        base_width: baseWidth,
+        base_length: baseLength,
+        height: Number(editForm.height),
+        top_width: Number(editForm.top_width) || baseWidth,
+        top_length: Number(editForm.top_length) || baseLength,
+        base_height: Number(editForm.base_height) || 0,
+        ...(editUsePedestal
+          ? {
+              pedestal_width: Number(editForm.pedestal_width) || null,
+              pedestal_length: Number(editForm.pedestal_length) || null,
+              pedestal_height: Number(editForm.pedestal_height) || 0,
+            }
+          : { pedestal_height: 0 }),
+        ...(editForm.pile_count
+          ? {
+              pile_count: Number(editForm.pile_count),
+              ...(editForm.pile_diameter ? { pile_diameter: Number(editForm.pile_diameter) } : {}),
+            }
+          : {}),
+      });
+      setStatus("Fundação atualizada.");
+      await refreshAfterEdit(guid);
+    } catch (e) {
+      fail(e);
+    }
+  };
+
+  const applySlabEdit = async () => {
+    const guid = selectedRef.current?.guid;
+    if (!guid) return;
+    try {
+      setBusy(true);
+      await ifcApi.editSlab(modelId, guid, { thickness: Number(editForm.thickness) });
+      setStatus("Laje atualizada.");
+      await refreshAfterEdit(guid);
+    } catch (e) {
+      fail(e);
+    }
+  };
   const applyRename = async () => {
     const guid = selectedRef.current?.guid;
     if (!guid) return;
@@ -1266,9 +1516,31 @@ export default function IfcPanel({
     }
   };
 
+  // rótulo pt-BR de cada papel de conexão — usado no aviso de apagar e no
+  // painel de propriedades
+  const ROLE_LABELS = {
+    supports: "sustenta",
+    supported_by: "apoiado em",
+    crosses: "cruza com",
+    bears_slab: "sustenta a laje",
+    slab_bearing: "apoiado na laje",
+  };
+
+  const describeConnections = (list) =>
+    list
+      .map((c) => `${ROLE_LABELS[c.role] ?? c.role} ${c.name ?? c.type} (${c.guid.slice(0, 8)})`)
+      .join("; ");
+
   const remove = async () => {
     const guid = selectedRef.current?.guid;
     if (!guid || !modelId) return;
+    if (connections.length > 0) {
+      const ok = window.confirm(
+        `Este elemento tem ${connections.length} conexão(ões) física(s): ${describeConnections(connections)}. ` +
+          `Apagar mesmo assim? (os elementos conectados não são apagados, só ficam sem essa conexão registrada)`
+      );
+      if (!ok) return;
+    }
     try {
       setBusy(true);
       await ifcApi.deleteEntity(modelId, guid);
@@ -1276,6 +1548,7 @@ export default function IfcPanel({
       mgrRef.current?.removeProduct(guid);
       setSelected(null);
       setDetail(null);
+      setConnections([]);
       await refreshLists(modelId);
       setStatus("Entidade removida.");
       setBusy(false);
@@ -1397,6 +1670,13 @@ export default function IfcPanel({
   }, [modelId]);
 
   const isWall = selected?.type === "IfcWall";
+  const isColumn = selected?.type === "IfcColumn";
+  const isBeam = selected?.type === "IfcBeam";
+  const isFooting = selected?.type === "IfcFooting";
+  const isSlab = selected?.type === "IfcSlab";
+  // true quando o Pset_ParametricSource existe (só então dá pra editar "em
+  // vivo" — sem ele não há como reconstruir os parâmetros de criação)
+  const hasEditParams = Boolean(detail?.psets?.Pset_ParametricSource);
   // estado do botão "3D": agora agregado de TODAS as ferramentas de planta
   // (Parede/Pilar/Viga/Fundação/Laje) — ver toggle3D acima.
   const all3DState = gatherAllSketch3DState();
@@ -2558,9 +2838,382 @@ export default function IfcPanel({
             </fieldset>
           )}
 
+          {/* pilar: seção (concreto ou catálogo de perfil metálico) + altura */}
+          {isColumn && (
+            <fieldset style={{ ...S.fs, marginTop: 6 }} disabled={busy}>
+              <legend>Pilar — editar em vivo</legend>
+              {!hasEditParams ? (
+                <div style={S.hint}>
+                  Elemento sem parâmetros de origem gravados (ex.: de um IFC
+                  externo) — não é possível editar em vivo; recrie-o.
+                </div>
+              ) : (
+                <>
+                  <div style={S.row}>
+                    <select
+                      style={S.select}
+                      value={editKind}
+                      onChange={(e) => setEditKind(e.target.value)}
+                    >
+                      <option value="concrete">Concreto</option>
+                      <option value="steel">Metálica</option>
+                    </select>
+                  </div>
+                  {editKind === "concrete" ? (
+                    <div style={S.row}>
+                      {["width", "depth", "height"].map((k) => (
+                        <label key={k} style={S.field}>
+                          {k[0]}
+                          <input
+                            style={S.num}
+                            type="number"
+                            step="0.01"
+                            value={editForm[k] ?? ""}
+                            onChange={(e) =>
+                              setEditForm((f) => ({ ...f, [k]: e.target.value }))
+                            }
+                          />
+                        </label>
+                      ))}
+                    </div>
+                  ) : (
+                    <>
+                      <div style={S.row}>
+                        <select
+                          style={S.select}
+                          value={editSteelFamily}
+                          onChange={(e) => setEditSteelFamily(e.target.value)}
+                        >
+                          {STEEL_FAMILY_SELECT_OPTIONS.map((o) => (
+                            <option key={o.value} value={o.value}>
+                              {o.label}
+                            </option>
+                          ))}
+                        </select>
+                      </div>
+                      {editSteelFamily === "custom" ? (
+                        <div style={S.row}>
+                          {["h", "b", "tw", "tf"].map((k) => (
+                            <label key={k} style={S.field}>
+                              {k}
+                              <input
+                                style={S.num}
+                                type="number"
+                                step="1"
+                                value={editProfileCustom[k]}
+                                onChange={(e) =>
+                                  setEditProfileCustom((c) => ({ ...c, [k]: e.target.value }))
+                                }
+                              />
+                            </label>
+                          ))}
+                        </div>
+                      ) : (
+                        <div style={S.row}>
+                          <select
+                            style={S.select}
+                            value={editSteelProfileValue}
+                            onChange={(e) => setEditSteelProfileValue(e.target.value)}
+                          >
+                            {(STEEL_COLUMN_FAMILIES[editSteelFamily]?.profiles ?? []).map((p) => (
+                              <option key={p.value} value={p.value}>
+                                {p.value}
+                              </option>
+                            ))}
+                          </select>
+                        </div>
+                      )}
+                      <div style={S.row}>
+                        <label style={S.field}>
+                          h(m)
+                          <input
+                            style={S.num}
+                            type="number"
+                            step="0.1"
+                            value={editForm.height ?? ""}
+                            onChange={(e) =>
+                              setEditForm((f) => ({ ...f, height: e.target.value }))
+                            }
+                          />
+                        </label>
+                      </div>
+                    </>
+                  )}
+                  <div style={S.row}>
+                    <button style={S.btn} onClick={applyColumnEdit}>
+                      Aplicar
+                    </button>
+                  </div>
+                </>
+              )}
+            </fieldset>
+          )}
+
+          {/* viga: seção (concreto ou catálogo) + comprimento */}
+          {isBeam && (
+            <fieldset style={{ ...S.fs, marginTop: 6 }} disabled={busy}>
+              <legend>Viga — editar em vivo</legend>
+              {!hasEditParams ? (
+                <div style={S.hint}>
+                  Elemento sem parâmetros de origem gravados (ex.: de um IFC
+                  externo) — não é possível editar em vivo; recrie-o.
+                </div>
+              ) : (
+                <>
+                  <div style={S.row}>
+                    <select
+                      style={S.select}
+                      value={editKind}
+                      onChange={(e) => setEditKind(e.target.value)}
+                    >
+                      <option value="concrete">Concreto</option>
+                      <option value="steel">Metálica</option>
+                    </select>
+                  </div>
+                  {editKind === "concrete" ? (
+                    <div style={S.row}>
+                      {["width", "depth", "length"].map((k) => (
+                        <label key={k} style={S.field}>
+                          {k[0]}
+                          <input
+                            style={S.num}
+                            type="number"
+                            step="0.01"
+                            value={editForm[k] ?? ""}
+                            onChange={(e) =>
+                              setEditForm((f) => ({ ...f, [k]: e.target.value }))
+                            }
+                          />
+                        </label>
+                      ))}
+                    </div>
+                  ) : (
+                    <>
+                      <div style={S.row}>
+                        <select
+                          style={S.select}
+                          value={editSteelFamily}
+                          onChange={(e) => setEditSteelFamily(e.target.value)}
+                        >
+                          {STEEL_BEAM_FAMILY_SELECT_OPTIONS.map((o) => (
+                            <option key={o.value} value={o.value}>
+                              {o.label}
+                            </option>
+                          ))}
+                        </select>
+                      </div>
+                      {editSteelFamily === "custom" ? (
+                        <div style={S.row}>
+                          {["h", "b", "tw", "tf"].map((k) => (
+                            <label key={k} style={S.field}>
+                              {k}
+                              <input
+                                style={S.num}
+                                type="number"
+                                step="1"
+                                value={editProfileCustom[k]}
+                                onChange={(e) =>
+                                  setEditProfileCustom((c) => ({ ...c, [k]: e.target.value }))
+                                }
+                              />
+                            </label>
+                          ))}
+                        </div>
+                      ) : (
+                        <div style={S.row}>
+                          <select
+                            style={S.select}
+                            value={editSteelProfileValue}
+                            onChange={(e) => setEditSteelProfileValue(e.target.value)}
+                          >
+                            {(STEEL_BEAM_FAMILIES[editSteelFamily]?.profiles ?? []).map((p) => (
+                              <option key={p.value} value={p.value}>
+                                {p.value}
+                              </option>
+                            ))}
+                          </select>
+                        </div>
+                      )}
+                      <div style={S.row}>
+                        <label style={S.field}>
+                          comp.(m)
+                          <input
+                            style={S.num}
+                            type="number"
+                            step="0.1"
+                            value={editForm.length ?? ""}
+                            onChange={(e) =>
+                              setEditForm((f) => ({ ...f, length: e.target.value }))
+                            }
+                          />
+                        </label>
+                      </div>
+                    </>
+                  )}
+                  <div style={S.row}>
+                    <button style={S.btn} onClick={applyBeamEdit}>
+                      Aplicar
+                    </button>
+                  </div>
+                </>
+              )}
+            </fieldset>
+          )}
+
+          {/* fundação: mesmos campos do formulário de inserção (base, topo,
+              rodapé, pedestal, estacas); o tipo sapata/bloco não é editável
+              aqui (fixo desde a criação) */}
+          {isFooting && (
+            <fieldset style={{ ...S.fs, marginTop: 6 }} disabled={busy}>
+              <legend>Fundação — editar em vivo (m)</legend>
+              {!hasEditParams ? (
+                <div style={S.hint}>
+                  Elemento sem parâmetros de origem gravados (ex.: de um IFC
+                  externo) — não é possível editar em vivo; recrie-o.
+                </div>
+              ) : (
+                <>
+                  <div style={S.row}>
+                    {["base_width", "base_length", "height"].map((k) => (
+                      <label key={k} style={S.field}>
+                        {k === "base_width" ? "bw" : k === "base_length" ? "bl" : "h"}
+                        <input
+                          style={S.num}
+                          type="number"
+                          step="0.05"
+                          value={editForm[k] ?? ""}
+                          onChange={(e) =>
+                            setEditForm((f) => ({ ...f, [k]: e.target.value }))
+                          }
+                        />
+                      </label>
+                    ))}
+                  </div>
+                  <div style={S.row}>
+                    {["top_width", "top_length", "base_height"].map((k) => (
+                      <label key={k} style={S.field}>
+                        {k === "top_width" ? "tw" : k === "top_length" ? "tl" : "rodapé"}
+                        <input
+                          style={S.num}
+                          type="number"
+                          step="0.05"
+                          value={editForm[k] ?? ""}
+                          onChange={(e) =>
+                            setEditForm((f) => ({ ...f, [k]: e.target.value }))
+                          }
+                        />
+                      </label>
+                    ))}
+                  </div>
+                  <label style={S.fieldWide}>
+                    <input
+                      type="checkbox"
+                      checked={editUsePedestal}
+                      onChange={(e) => setEditUsePedestal(e.target.checked)}
+                    />{" "}
+                    pedestal
+                  </label>
+                  {editUsePedestal && (
+                    <div style={S.row}>
+                      {["pedestal_width", "pedestal_length", "pedestal_height"].map((k) => (
+                        <label key={k} style={S.field}>
+                          {k === "pedestal_width" ? "pw" : k === "pedestal_length" ? "pl" : "ph"}
+                          <input
+                            style={S.num}
+                            type="number"
+                            step="0.05"
+                            value={editForm[k] ?? ""}
+                            onChange={(e) =>
+                              setEditForm((f) => ({ ...f, [k]: e.target.value }))
+                            }
+                          />
+                        </label>
+                      ))}
+                    </div>
+                  )}
+                  {editForm.predefined_type === "PILE_CAP" && (
+                    <div style={S.row}>
+                      <label style={S.field}>
+                        estacas
+                        <input
+                          style={S.num}
+                          type="number"
+                          step="1"
+                          value={editForm.pile_count ?? ""}
+                          onChange={(e) =>
+                            setEditForm((f) => ({ ...f, pile_count: e.target.value }))
+                          }
+                        />
+                      </label>
+                      <label style={S.field}>
+                        Ø(m)
+                        <input
+                          style={S.num}
+                          type="number"
+                          step="0.05"
+                          value={editForm.pile_diameter ?? ""}
+                          onChange={(e) =>
+                            setEditForm((f) => ({ ...f, pile_diameter: e.target.value }))
+                          }
+                        />
+                      </label>
+                    </div>
+                  )}
+                  <div style={S.row}>
+                    <button style={S.btn} onClick={applyFootingEdit}>
+                      Aplicar
+                    </button>
+                  </div>
+                </>
+              )}
+            </fieldset>
+          )}
+
+          {/* laje/radier: só a espessura é editável em vivo — o contorno em
+              planta continua vindo do esboço 2D */}
+          {isSlab && (
+            <fieldset style={{ ...S.fs, marginTop: 6 }} disabled={busy}>
+              <legend>Laje — editar espessura (m)</legend>
+              {!hasEditParams ? (
+                <div style={S.hint}>
+                  Elemento sem parâmetros de origem gravados (ex.: de um IFC
+                  externo) — não é possível editar em vivo; recrie-o.
+                </div>
+              ) : (
+                <div style={S.row}>
+                  <label style={S.field}>
+                    e
+                    <input
+                      style={S.num}
+                      type="number"
+                      step="0.01"
+                      value={editForm.thickness ?? ""}
+                      onChange={(e) =>
+                        setEditForm((f) => ({ ...f, thickness: e.target.value }))
+                      }
+                    />
+                  </label>
+                  <button style={S.btn} onClick={applySlabEdit}>
+                    Aplicar
+                  </button>
+                </div>
+              )}
+            </fieldset>
+          )}
+
           <div style={S.hint}>
             Arraste o gizmo · Delete para apagar
           </div>
+          {connections.length > 0 && (
+            <div style={S.psets}>
+              <strong>Conectividade física</strong>
+              {connections.map((c) => (
+                <div key={`${c.role}-${c.guid}`}>
+                  · {ROLE_LABELS[c.role] ?? c.role}: {c.name ?? c.type} ({c.guid.slice(0, 8)})
+                </div>
+              ))}
+            </div>
+          )}
           {detail?.psets && Object.keys(detail.psets).length > 0 && (
             <div style={S.psets}>
               {Object.keys(detail.psets).map((p) => (
