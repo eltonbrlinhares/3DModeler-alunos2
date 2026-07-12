@@ -12,8 +12,18 @@
 
 const TOOLS = [
   { id: "wall", label: "PAR", title: "Parede — desenhe o eixo em planta (clique os vértices; 2×clique/Enter/clique no 1º ponto para fechar)" },
+  { id: "column", label: "PIL", title: "Pilar — clique interseções de grid em planta para marcar cada pilar" },
+  { id: "beam", label: "VIG", title: "Viga — desenhe o eixo em planta (clique as interseções; 2×clique/Enter/clique no 1º ponto para fechar)" },
+  { id: "footing", label: "FUND", title: "Fundação (sapata/bloco) — clique interseções de grid em planta para marcar cada fundação" },
+  { id: "slab", label: "LAJE", title: "Laje/Radier — desenhe o contorno em planta (clique as interseções; 2×clique/Enter/clique no 1º ponto para fechar)" },
   { id: "dimension", label: "COTA", title: "Cota — clique sobre uma parede para medi-la; clique no valor para editar" },
 ];
+
+// ferramentas cujo tamanho vertical não é definido pelo desenho em planta
+// (por isso precisam do campo "altura 3D" desta toolbar); as demais (viga,
+// fundação, laje) já têm sua dimensão vertical nos campos do formulário
+// lateral (profundidade da seção / altura da fundação / espessura da laje).
+const HEIGHT_FIELD_TOOLS = new Set(["wall", "column"]);
 
 function btnStyle(active, disabled) {
   return {
@@ -37,7 +47,10 @@ export default function TopToolbar({
   onSelectTool,
   wallThickness,
   onThicknessChange,
-  wallHeight,
+  // altura 3D: o valor/onChange mudam conforme a ferramenta ativa (parede
+  // usa wallHeight, pilar usa columnHeight) — ver HEIGHT_FIELD_TOOLS acima e
+  // o cálculo de `heightValue`/`onHeightChange` no IfcPanel.
+  heightValue,
   onHeightChange,
   onConvert3D,
   canConvert,
@@ -103,8 +116,8 @@ export default function TopToolbar({
       <button
         title={
           is3DActive
-            ? "3D — voltar para a planta 2D"
-            : "3D — extruda as paredes desenhadas em planta com a altura configurada"
+            ? "3D — voltar tudo para a planta 2D"
+            : "3D — gera em 3D tudo o que foi desenhado em planta (parede, pilar, viga, fundação, laje)"
         }
         disabled={disabled || busy || !canConvert}
         onClick={onConvert3D}
@@ -129,17 +142,19 @@ export default function TopToolbar({
         </label>
       )}
 
-      <label style={{ display: "flex", alignItems: "center", gap: 4 }}>
-        altura 3D (m)
-        <input
-          type="number"
-          step="0.1"
-          min="0.1"
-          value={wallHeight}
-          onChange={(e) => onHeightChange(e.target.value)}
-          style={{ width: 56, font: "12px monospace" }}
-        />
-      </label>
+      {HEIGHT_FIELD_TOOLS.has(sketchTool) && (
+        <label style={{ display: "flex", alignItems: "center", gap: 4 }}>
+          altura 3D (m)
+          <input
+            type="number"
+            step="0.1"
+            min="0.1"
+            value={heightValue}
+            onChange={(e) => onHeightChange(e.target.value)}
+            style={{ width: 56, font: "12px monospace" }}
+          />
+        </label>
+      )}
 
       {sketchTool && (
         <span style={{ color: "#9ca3af" }}>Esc = cancelar</span>

@@ -35,9 +35,16 @@ import {
   DEFAULT_WALL_THICKNESS,
   DEFAULT_WALL_HEIGHT,
 } from "../ifc/planSketch/WallSketchController.js";
+import { ColumnSketchController } from "../ifc/planSketch/ColumnSketchController.js";
+import { BeamSketchController } from "../ifc/planSketch/BeamSketchController.js";
+import { FootingSketchController } from "../ifc/planSketch/FootingSketchController.js";
+import { SlabSketchController } from "../ifc/planSketch/SlabSketchController.js";
 import { DimensionController } from "../ifc/planSketch/DimensionController.js";
 import { miteredWallSegments, wallSegmentPlacement } from "../ifc/geometry/wallChainSegments.js";
+import { localSlabPolyline } from "../ifc/geometry/slabPrism.js";
 import TopToolbar from "./TopToolbar.jsx";
+
+const DEFAULT_COLUMN_HEIGHT = 3; // m — altura aplicada aos pilares ao converter a planta em 3D
 
 // O seletor de tipo, os campos do formulário e o botão "+ Elemento" são
 // dirigidos pelo registro de ferramentas (cada uma carrega label/fields/defaults).
@@ -123,10 +130,11 @@ export default function IfcPanel({
   const [newLevel, setNewLevel] = useState({ name: "Level", elevation: 3 });
   const [gridForm, setGridForm] = useState({ nu: 3, nv: 3, spacing: 5 });
 
-  // ── ferramenta Parede/3D/Cota (toolbar superior) ──
-  const [sketchTool, setSketchTool] = useState(null); // null | "wall" | "dimension"
+  // ── ferramentas de planta 2D → 3D / Cota (toolbar superior) ──
+  const [sketchTool, setSketchTool] = useState(null); // null | "wall" | "column" | "beam" | "footing" | "slab" | "dimension"
   const [wallThickness, setWallThickness] = useState(DEFAULT_WALL_THICKNESS);
   const [wallHeight, setWallHeight] = useState(DEFAULT_WALL_HEIGHT);
+  const [columnHeight, setColumnHeight] = useState(DEFAULT_COLUMN_HEIGHT);
   const [, setChainsVersion] = useState(0); // bump para reagir a mudanças nas chains (fora do React state)
 
   // ── desfazer/refazer GLOBAL (toolbar superior) ──
@@ -148,6 +156,10 @@ export default function IfcPanel({
   const domRef = useRef(null);
   const insertionRef = useRef(null);
   const wallSketchRef = useRef(null);
+  const columnSketchRef = useRef(null);
+  const beamSketchRef = useRef(null);
+  const footingSketchRef = useRef(null);
+  const slabSketchRef = useRef(null);
   const dimensionRef = useRef(null);
   const modelIdRef = useRef(null);
   const selectedRef = useRef(null);
@@ -258,6 +270,50 @@ export default function IfcPanel({
     wallSketch.attach();
     wallSketchRef.current = wallSketch;
 
+    // ferramentas "Pilar" / "Viga" / "Fundação" / "Laje" (planta 2D) — mesmo
+    // padrão da parede, cada uma lê o formulário lateral (a mesma aba que a
+    // inserção direta em 3D já usa) no instante de cada clique.
+    const sketchDeps = {
+      getScene: () => scene,
+      getCamera: () => camera,
+      getDom: () => dom,
+      getOrbit: () => orbit,
+      getGrids: () => gridsRef.current,
+      getDatumManager: () => datumRef.current,
+      getForm: () => formRef.current,
+    };
+    const columnSketch = new ColumnSketchController(sketchDeps);
+    columnSketch.onStatus = setStatus;
+    columnSketch.onChainsChanged = () => setChainsVersion((v) => v + 1);
+    columnSketch.onHistoryPush = (before, after) => pushSketchHistory("column", before, after);
+    columnSketch.mount();
+    columnSketch.attach();
+    columnSketchRef.current = columnSketch;
+
+    const beamSketch = new BeamSketchController(sketchDeps);
+    beamSketch.onStatus = setStatus;
+    beamSketch.onChainsChanged = () => setChainsVersion((v) => v + 1);
+    beamSketch.onHistoryPush = (before, after) => pushSketchHistory("beam", before, after);
+    beamSketch.mount();
+    beamSketch.attach();
+    beamSketchRef.current = beamSketch;
+
+    const footingSketch = new FootingSketchController(sketchDeps);
+    footingSketch.onStatus = setStatus;
+    footingSketch.onChainsChanged = () => setChainsVersion((v) => v + 1);
+    footingSketch.onHistoryPush = (before, after) => pushSketchHistory("footing", before, after);
+    footingSketch.mount();
+    footingSketch.attach();
+    footingSketchRef.current = footingSketch;
+
+    const slabSketch = new SlabSketchController(sketchDeps);
+    slabSketch.onStatus = setStatus;
+    slabSketch.onChainsChanged = () => setChainsVersion((v) => v + 1);
+    slabSketch.onHistoryPush = (before, after) => pushSketchHistory("slab", before, after);
+    slabSketch.mount();
+    slabSketch.attach();
+    slabSketchRef.current = slabSketch;
+
     // ferramenta "Cota" — mede/edita paramétricamente um trecho de parede
     const dimension = new DimensionController({
       getScene: () => scene,
@@ -298,6 +354,10 @@ export default function IfcPanel({
       insertion.dispose();
       dimension.dispose();
       wallSketch.dispose();
+      columnSketch.dispose();
+      beamSketch.dispose();
+      footingSketch.dispose();
+      slabSketch.dispose();
       transform.dispose();
       orbit.enabled = true;
       mgr.dispose();
@@ -309,6 +369,10 @@ export default function IfcPanel({
       selectionRef.current = null;
       insertionRef.current = null;
       wallSketchRef.current = null;
+      columnSketchRef.current = null;
+      beamSketchRef.current = null;
+      footingSketchRef.current = null;
+      slabSketchRef.current = null;
       dimensionRef.current = null;
       sceneRef.current = null;
       cameraRef.current = null;
@@ -321,7 +385,12 @@ export default function IfcPanel({
   // ativa/desativa a ferramenta de planta conforme o botão selecionado na
   // TopToolbar (mutuamente exclusiva com a inserção via dropdown do IfcPanel)
   useEffect(() => {
-    wallSketchRef.current?.setActive(sketchTool === "wall", activeInsertionLevel());
+    const level = activeInsertionLevel();
+    wallSketchRef.current?.setActive(sketchTool === "wall", level);
+    columnSketchRef.current?.setActive(sketchTool === "column", level);
+    beamSketchRef.current?.setActive(sketchTool === "beam", level);
+    footingSketchRef.current?.setActive(sketchTool === "footing", level);
+    slabSketchRef.current?.setActive(sketchTool === "slab", level);
     dimensionRef.current?.setActive(sketchTool === "dimension");
   }, [sketchTool]);
 
@@ -647,17 +716,56 @@ export default function IfcPanel({
     [refreshLists, refreshMesh, refreshDatums]
   );
 
+  // ── planta 2D de TODAS as ferramentas (Parede/Pilar/Viga/Fundação/Laje) ────
+  // Mapa único usado pelo histórico global para não perder o estado de uma
+  // ferramenta enquanto desfaz/refaz uma ação feita em outra.
+  const planSketchRefs = () => ({
+    wall: wallSketchRef.current,
+    column: columnSketchRef.current,
+    beam: beamSketchRef.current,
+    footing: footingSketchRef.current,
+    slab: slabSketchRef.current,
+  });
+
+  const snapshotPlanSketches = useCallback(() => {
+    const snap = {};
+    for (const [key, ctrl] of Object.entries(planSketchRefs())) {
+      if (ctrl) snap[key] = ctrl.snapshotChains();
+    }
+    return snap;
+  }, []);
+
+  const restorePlanSketches = useCallback((snap) => {
+    if (!snap) return;
+    for (const [key, ctrl] of Object.entries(planSketchRefs())) {
+      if (ctrl && snap[key]) ctrl.restoreChains(snap[key]);
+    }
+  }, []);
+
   // ── histórico global (desfazer/refazer) ───────────────────────────────────
   // Registro: { backendCount, sketchBefore, sketchAfter }. `backendCount` diz
   // quantas vezes chamar ifcApi.undo/redo em sequência (cada chamada de API
-  // do backend é um snapshot próprio); `sketchBefore/After` são snapshots das
-  // cadeias da Parede/Cota (ver WallSketchController.snapshotChains), usados
-  // quando a ação mexeu só na planta (ainda não convertida em 3D).
+  // do backend é um snapshot próprio); `sketchBefore/After` são snapshots de
+  // TODAS as plantas 2D (Parede/Pilar/Viga/Fundação/Laje — ver
+  // snapshotPlanSketches acima), usados quando a ação mexeu só na planta
+  // (ainda não convertida em 3D).
   const pushHistory = useCallback((backendCount, sketchBefore = null, sketchAfter = null) => {
     historyRef.current.past.push({ backendCount, sketchBefore, sketchAfter });
     historyRef.current.future = [];
     setHistoryVersion((v) => v + 1);
   }, []);
+
+  // Chamado pelo onHistoryPush de cada controller de planta com o
+  // before/after LOCAL daquela ferramenta (a única que mudou); combina com o
+  // estado ATUAL das demais (que não mudou) para formar o snapshot global.
+  const pushSketchHistory = useCallback(
+    (toolKey, beforeLocal, afterLocal) => {
+      const afterAll = snapshotPlanSketches(); // já reflete a mudança (aplicada antes deste callback)
+      const beforeAll = { ...afterAll, [toolKey]: beforeLocal };
+      pushHistory(0, beforeAll, afterAll);
+    },
+    [snapshotPlanSketches, pushHistory]
+  );
 
   const applyHistoryRecord = async (rec, direction) => {
     const backendStep = direction === "undo" ? ifcApi.undo : ifcApi.redo;
@@ -665,7 +773,7 @@ export default function IfcPanel({
       await backendStep(modelId);
     }
     const sketchState = direction === "undo" ? rec.sketchBefore : rec.sketchAfter;
-    if (sketchState) wallSketchRef.current?.restoreChains(sketchState);
+    if (sketchState) restorePlanSketches(sketchState);
     await reloadAll(modelId);
     dimensionRef.current?.refreshAll();
   };
@@ -710,13 +818,18 @@ export default function IfcPanel({
     else insertion.begin(elemType);
   };
 
-  // ── toolbar superior: Parede / Cota (mutuamente exclusivas com o dropdown) ─
+  // ── toolbar superior: Parede/Pilar/Viga/Fundação/Laje/Cota (mutuamente
+  // exclusivas com o dropdown "+ Elemento") ──
   const selectSketchTool = (tool) => {
     if (tool) {
       insertionRef.current?.cancel();
       transformRef.current?.detach();
       setSelected(null);
       setDetail(null);
+      // troca também o tipo do formulário lateral (mesmos campos que a
+      // ferramenta de planta lê a cada clique), quando o id bate com um
+      // elemType — não é o caso de "dimension".
+      if (ELEMENT_FORMS[tool]) setElemType(tool);
     }
     setSketchTool(tool);
   };
@@ -775,27 +888,285 @@ export default function IfcPanel({
     return deleted;
   };
 
+  // ── Pilar: converte cada marcador pendente num IfcColumn (altura vem do
+  // campo "altura 3D" da TopToolbar, igual à parede). ──
+  const convertPendingColumnsTo3D = async (pending) => {
+    const columnSketch = columnSketchRef.current;
+    setStatus("Gerando pilares 3D…");
+    const height = Number(columnHeight) || DEFAULT_COLUMN_HEIGHT;
+    let seq = elementsRef.current.length + 1;
+    let created = 0;
+    for (const marker of pending) {
+      const { width, depth, refX, refY, profile, shape, h, b, tw, tf } = marker.form;
+      const origin = marker.point.clone();
+      origin.x += refX === "start" ? width / 2 : refX === "end" ? -width / 2 : 0;
+      origin.y += refY === "start" ? depth / 2 : refY === "end" ? -depth / 2 : 0;
+      const storey_guid = marker.levelGuid ?? (await firstStorey(modelId));
+      const { guid } = await ifcApi.createColumn(modelId, {
+        name: `C${seq++}`,
+        width,
+        depth,
+        height,
+        position: [origin.x, origin.y, origin.z],
+        rotation_z: 0,
+        storey_guid,
+        ...(profile && shape && h && b && tw && tf ? { profile, shape, h, b, tw, tf } : {}),
+      });
+      columnSketch.markConverted(marker.id, guid);
+      created += 1;
+    }
+    setStatus("Pilares 3D gerados a partir da planta.");
+    return created;
+  };
+
+  const revertConvertedColumnsTo2D = async (converted) => {
+    const columnSketch = columnSketchRef.current;
+    setStatus("Voltando pilares para a planta 2D…");
+    let deleted = 0;
+    for (const marker of converted) {
+      await ifcApi.deleteEntity(modelId, marker.columnGuid);
+      deleted += 1;
+      columnSketch.revertToPlan(marker.id);
+    }
+    setStatus("De volta à planta 2D.");
+    return deleted;
+  };
+
+  // ── Fundação: converte cada marcador pendente numa IfcFooting (sapata ou
+  // bloco — todos os campos já vieram do formulário no clique). ──
+  const convertPendingFootingsTo3D = async (pending) => {
+    const footingSketch = footingSketchRef.current;
+    setStatus("Gerando fundações 3D…");
+    let seq = elementsRef.current.length + 1;
+    let created = 0;
+    for (const marker of pending) {
+      const p = marker.form;
+      const totalHeight = p.baseHeight + p.height + p.pedestalHeight;
+      const origin = marker.point.clone();
+      origin.z -= totalHeight;
+      const storey_guid = marker.levelGuid ?? (await firstStorey(modelId));
+      const { guid } = await ifcApi.createFooting(modelId, {
+        name: `F${seq++}`,
+        predefined_type: p.isPileCap ? "PILE_CAP" : "PAD_FOOTING",
+        base_width: p.baseWidth,
+        base_length: p.baseLength,
+        top_width: p.topWidth,
+        top_length: p.topLength,
+        height: p.height,
+        ...(p.baseHeight > 0 ? { base_height: p.baseHeight } : {}),
+        ...(p.pedestalHeight > 0
+          ? { pedestal_width: p.pedestalWidth, pedestal_length: p.pedestalLength, pedestal_height: p.pedestalHeight }
+          : {}),
+        position: [origin.x, origin.y, origin.z],
+        rotation_z: 0,
+        storey_guid,
+        ...(p.isPileCap && p.pileCount
+          ? { pile_count: Number(p.pileCount), ...(p.pileDiameter ? { pile_diameter: Number(p.pileDiameter) } : {}) }
+          : {}),
+      });
+      footingSketch.markConverted(marker.id, guid);
+      created += 1;
+    }
+    setStatus("Fundações 3D geradas a partir da planta.");
+    return created;
+  };
+
+  const revertConvertedFootingsTo2D = async (converted) => {
+    const footingSketch = footingSketchRef.current;
+    setStatus("Voltando fundações para a planta 2D…");
+    let deleted = 0;
+    for (const marker of converted) {
+      await ifcApi.deleteEntity(modelId, marker.footingGuid);
+      deleted += 1;
+      footingSketch.revertToPlan(marker.id);
+    }
+    setStatus("De volta à planta 2D.");
+    return deleted;
+  };
+
+  // ── Viga: converte cada TRECHO de cada cadeia pendente numa IfcBeam
+  // própria (sem miter — ver BeamSketchController). ──
+  const convertPendingBeamsTo3D = async (pending) => {
+    const beamSketch = beamSketchRef.current;
+    setStatus("Gerando vigas 3D…");
+    let seq = elementsRef.current.length + 1;
+    let created = 0;
+    for (const chain of pending) {
+      const { width, depth, axisRef, profile, shape, h, b, tw, tf } = chain.form;
+      const pts = chain.points;
+      const segs = [];
+      for (let i = 0; i < pts.length - 1; i += 1) segs.push([pts[i], pts[i + 1]]);
+      if (chain.closed && pts.length > 2) segs.push([pts[pts.length - 1], pts[0]]);
+      const guids = [];
+      for (const [p0, p1] of segs) {
+        const dx = p1.x - p0.x;
+        const dy = p1.y - p0.y;
+        const length = Math.hypot(dx, dy);
+        if (length < 0.05) {
+          guids.push(null);
+          continue;
+        }
+        const rotation_z = Math.atan2(dy, dx);
+        const origin = p0.clone();
+        origin.z += axisRef === "bottom" ? depth / 2 : axisRef === "center" ? 0 : -depth / 2;
+        const storey_guid = chain.levelGuid ?? (await firstStorey(modelId));
+        const { guid } = await ifcApi.createBeam(modelId, {
+          name: `B${seq++}`,
+          width,
+          depth,
+          length,
+          position: [origin.x, origin.y, origin.z],
+          rotation_z,
+          storey_guid,
+          ...(profile && shape && h && b && tw && tf ? { profile, shape, h, b, tw, tf } : {}),
+        });
+        guids.push(guid);
+        created += 1;
+      }
+      beamSketch.markChainConverted(chain.id, guids);
+    }
+    setStatus("Vigas 3D geradas a partir da planta.");
+    return created;
+  };
+
+  const revertConvertedBeamsTo2D = async (converted) => {
+    const beamSketch = beamSketchRef.current;
+    setStatus("Voltando vigas para a planta 2D…");
+    let deleted = 0;
+    for (const chain of converted) {
+      for (const guid of chain.beamGuids) {
+        if (guid) {
+          await ifcApi.deleteEntity(modelId, guid);
+          deleted += 1;
+        }
+      }
+      beamSketch.revertChainTo2D(chain.id);
+    }
+    setStatus("De volta à planta 2D.");
+    return deleted;
+  };
+
+  // ── Laje/Radier: converte cada contorno fechado pendente numa ÚNICA
+  // IfcSlab (o polígono inteiro — sem segmentar, diferente de parede/viga). ──
+  const convertPendingSlabsTo3D = async (pending) => {
+    const slabSketch = slabSketchRef.current;
+    setStatus("Gerando lajes 3D…");
+    let seq = elementsRef.current.length + 1;
+    let created = 0;
+    for (const chain of pending) {
+      const { thickness, axisRef, predefinedType } = chain.form;
+      const origin = chain.points[0].clone();
+      origin.z += axisRef === "bottom" ? 0 : axisRef === "center" ? -thickness / 2 : -thickness;
+      const storey_guid = chain.levelGuid ?? (await firstStorey(modelId));
+      const isRaft = predefinedType === "BASESLAB";
+      const { guid } = await ifcApi.createSlab(modelId, {
+        name: `${isRaft ? "R" : "S"}${seq++}`,
+        thickness,
+        polyline: localSlabPolyline(chain.points),
+        position: [origin.x, origin.y, origin.z],
+        rotation_z: 0,
+        storey_guid,
+        ...(isRaft ? { predefined_type: "BASESLAB" } : {}),
+      });
+      slabSketch.markChainConverted(chain.id, guid);
+      created += 1;
+    }
+    setStatus("Lajes 3D geradas a partir da planta.");
+    return created;
+  };
+
+  const revertConvertedSlabsTo2D = async (converted) => {
+    const slabSketch = slabSketchRef.current;
+    setStatus("Voltando lajes para a planta 2D…");
+    let deleted = 0;
+    for (const chain of converted) {
+      if (chain.slabGuid) {
+        await ifcApi.deleteEntity(modelId, chain.slabGuid);
+        deleted += 1;
+      }
+      slabSketch.revertChainTo2D(chain.id);
+    }
+    setStatus("De volta à planta 2D.");
+    return deleted;
+  };
+
+  // ── toolbar superior: botão "3D" — converte TODOS os elementos desenhados
+  // em planta (Parede/Pilar/Viga/Fundação/Laje juntos), não só o tipo da
+  // ferramenta atualmente selecionada. Cada handler sabe, pelos seus
+  // próprios itens, quais já foram convertidos. ──
+  const SKETCH_3D_HANDLERS = {
+    wall: {
+      getChains: () => wallSketchRef.current?.getChains() ?? [],
+      isConverted: (c) => Boolean(c.wallGuids),
+      convert: convertPendingChainsTo3D,
+      revert: revertConvertedChainsTo2D,
+    },
+    column: {
+      getChains: () => columnSketchRef.current?.getChains() ?? [],
+      isConverted: (c) => Boolean(c.columnGuid),
+      convert: convertPendingColumnsTo3D,
+      revert: revertConvertedColumnsTo2D,
+    },
+    beam: {
+      getChains: () => beamSketchRef.current?.getChains() ?? [],
+      isConverted: (c) => Boolean(c.beamGuids),
+      convert: convertPendingBeamsTo3D,
+      revert: revertConvertedBeamsTo2D,
+    },
+    footing: {
+      getChains: () => footingSketchRef.current?.getChains() ?? [],
+      isConverted: (c) => Boolean(c.footingGuid),
+      convert: convertPendingFootingsTo3D,
+      revert: revertConvertedFootingsTo2D,
+    },
+    slab: {
+      getChains: () => slabSketchRef.current?.getChains() ?? [],
+      isConverted: (c) => Boolean(c.slabGuid),
+      convert: convertPendingSlabsTo3D,
+      revert: revertConvertedSlabsTo2D,
+    },
+  };
+
+  // Junta pendentes/convertidos de TODOS os tipos — usado tanto pelo clique
+  // no botão quanto pelo estado (canConvert/is3DActive) que decide o rótulo.
+  const gatherAllSketch3DState = () =>
+    Object.values(SKETCH_3D_HANDLERS).map((handler) => {
+      const chains = handler.getChains();
+      return {
+        handler,
+        converted: chains.filter(handler.isConverted),
+        pending: chains.filter((c) => !handler.isConverted(c)),
+      };
+    });
+
   const toggle3D = async () => {
-    const wallSketch = wallSketchRef.current;
-    if (!modelId || !wallSketch) return;
-    const chains = wallSketch.getChains();
-    const converted = chains.filter((c) => c.wallGuids);
-    const pending = chains.filter((c) => !c.wallGuids);
-    if (!converted.length && !pending.length) {
-      setStatus("Nenhuma parede em planta para converter.");
+    if (!modelId) return;
+    const perTool = gatherAllSketch3DState();
+    const totalConverted = perTool.reduce((n, t) => n + t.converted.length, 0);
+    const totalPending = perTool.reduce((n, t) => n + t.pending.length, 0);
+    if (!totalConverted && !totalPending) {
+      setStatus("Nada desenhado em planta para converter.");
       return;
     }
     try {
       setBusy(true);
-      const sketchBefore = wallSketch.snapshotChains();
-      // se já existe algo em 3D, o clique alterna de volta para a planta;
-      // caso contrário, converte o que ainda está só em planta.
-      const backendCount = converted.length
-        ? await revertConvertedChainsTo2D(converted)
-        : await convertPendingChainsTo3D(pending);
+      const sketchBefore = snapshotPlanSketches();
+      let backendCount = 0;
+      if (totalPending === 0) {
+        // tudo já está em 3D — o clique volta TUDO para a planta 2D.
+        for (const { handler, converted } of perTool) {
+          if (converted.length) backendCount += await handler.revert(converted);
+        }
+      } else {
+        // converte tudo que ainda está só em planta, em qualquer tipo de
+        // elemento — o que já é 3D permanece como está.
+        for (const { handler, pending } of perTool) {
+          if (pending.length) backendCount += await handler.convert(pending);
+        }
+      }
       await refreshLists(modelId);
       await refreshMesh(modelId);
-      pushHistory(backendCount, sketchBefore, wallSketch.snapshotChains());
+      pushHistory(backendCount, sketchBefore, snapshotPlanSketches());
       setBusy(false);
     } catch (e) {
       fail(e);
@@ -1026,9 +1397,18 @@ export default function IfcPanel({
   }, [modelId]);
 
   const isWall = selected?.type === "IfcWall";
-  const sketchChains = wallSketchRef.current?.getChains() ?? [];
-  const canConvert = sketchChains.some((c) => !c.wallGuids);
-  const is3DActive = sketchChains.some((c) => c.wallGuids);
+  // estado do botão "3D": agora agregado de TODAS as ferramentas de planta
+  // (Parede/Pilar/Viga/Fundação/Laje) — ver toggle3D acima.
+  const all3DState = gatherAllSketch3DState();
+  const anyPending = all3DState.some((t) => t.pending.length > 0);
+  const anyConverted = all3DState.some((t) => t.converted.length > 0);
+  const canConvert = anyPending || anyConverted;
+  const is3DActive = anyConverted && !anyPending;
+  // campo "altura 3D" da TopToolbar: parede usa wallHeight, pilar usa
+  // columnHeight (as demais ferramentas já têm sua dimensão vertical no
+  // formulário lateral — ver HEIGHT_FIELD_TOOLS em TopToolbar.jsx).
+  const heightValue = sketchTool === "column" ? columnHeight : wallHeight;
+  const onHeightChange = sketchTool === "column" ? setColumnHeight : setWallHeight;
 
   // ── UI ────────────────────────────────────────────────────────────────────
   return (
@@ -1038,8 +1418,8 @@ export default function IfcPanel({
         onSelectTool={selectSketchTool}
         wallThickness={wallThickness}
         onThicknessChange={setWallThickness}
-        wallHeight={wallHeight}
-        onHeightChange={setWallHeight}
+        heightValue={heightValue}
+        onHeightChange={onHeightChange}
         onConvert3D={toggle3D}
         canConvert={canConvert || is3DActive}
         is3DActive={is3DActive}
