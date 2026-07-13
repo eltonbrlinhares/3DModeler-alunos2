@@ -9,8 +9,9 @@
 import * as THREE from "three";
 
 export class SelectionController {
-  constructor({ camera, dom, getManager, onPick, isInserting, isTransforming }) {
+  constructor({ camera, getCamera, dom, getManager, onPick, isInserting, isTransforming }) {
     this.camera = camera;
+    this.getCamera = getCamera ?? (() => this.camera);
     this.dom = dom;
     this.getManager = getManager;
     this.onPick = onPick;
@@ -37,7 +38,9 @@ export class SelectionController {
       const rect = this.dom.getBoundingClientRect();
       this._ndc.x = ((ev.clientX - rect.left) / rect.width) * 2 - 1;
       this._ndc.y = -((ev.clientY - rect.top) / rect.height) * 2 + 1;
-      this._ray.setFromCamera(this._ndc, this.camera);
+      const camera = this.getCamera?.() ?? this.camera;
+      if (!camera) return;
+      this._ray.setFromCamera(this._ndc, camera);
       this.onPick(this.getManager()?.pick(this._ray));
     };
     this.dom.addEventListener("pointerdown", this._onDown);

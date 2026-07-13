@@ -153,6 +153,7 @@ export class InsertionController {
       const storey = payload.storey_guid ?? (await d.firstStorey(id));
       const { guid } = await apiFn(id, { ...payload, storey_guid: storey });
       d.getManager()?.replaceProduct(await d.api.productMesh(id, guid));
+      d.onSceneChanged?.();
       await d.refreshLists(id);
       this.end();
       d.setStatus(`${label} ${guid.slice(0, 8)} criado(a).`);

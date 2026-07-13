@@ -96,20 +96,33 @@ def _find_pset(product, name: str):
 
 
 def write_params(f: ifcopenshell.file, product, params: dict) -> None:
-    """Grava os parâmetros de criação/edição num Pset próprio (um único campo
-    de texto JSON). Isso é o que permite reabrir um elemento já inserido para
-    edição com o formulário pré-preenchido: a geometria final (malha/extrusão)
-    não é suficiente para recuperar, por exemplo, qual perfil de catálogo foi
-    usado ou o afunilamento de uma sapata. Idempotente: reaproveita o Pset se
-    já existir, em vez de duplicar.
+    """Grava parâmetros de criação/edição em um Pset próprio.
+
+    Quando o Pset já existe, preserva campos que não fazem parte da edição
+    atual (por exemplo os vínculos ``base_level_guid``/``top_level_guid``).
     """
     pset = _find_pset(product, PARAMS_PSET_NAME)
-    if pset is None:
+    existing: dict = {}
+    if pset is not None:
+        for prop in getattr(pset, "HasProperties", None) or ():
+            if getattr(prop, "Name", None) != "ParamsJSON":
+                continue
+            wrapped = getattr(getattr(prop, "NominalValue", None), "wrappedValue", None)
+            if wrapped:
+                try:
+                    value = json.loads(str(wrapped))
+                    if isinstance(value, dict):
+                        existing = value
+                except (TypeError, ValueError, json.JSONDecodeError):
+                    existing = {}
+            break
+    else:
         pset = ifcopenshell.api.run(
             "pset.add_pset", f, product=product, name=PARAMS_PSET_NAME
         )
+    merged = {**existing, **params}
     ifcopenshell.api.run(
-        "pset.edit_pset", f, pset=pset, properties={"ParamsJSON": json.dumps(params)}
+        "pset.edit_pset", f, pset=pset, properties={"ParamsJSON": json.dumps(merged)}
     )
 
 
@@ -159,6 +172,9 @@ def create_wall(
     position=(0.0, 0.0, 0.0),
     rotation_z: float = 0.0,
     storey_guid: str | None = None,
+    top_level_guid: str | None = None,
+    base_offset: float = 0.0,
+    top_offset: float = 0.0,
 ) -> ifcopenshell.entity_instance:
     """Cria um IfcWall com representação extrudada e placement."""
     with mutate(entry) as f:
@@ -178,6 +194,19 @@ def create_wall(
             "geometry.assign_representation", f, product=wall, representation=rep
         )
         place_product(f, wall, matrix_from(position, rotation_z), storey_guid)
+        write_params(
+            f,
+            wall,
+            {
+                "length": length,
+                "height": height,
+                "thickness": thickness,
+                "base_level_guid": storey_guid,
+                "top_level_guid": top_level_guid,
+                "base_offset": float(base_offset),
+                "top_offset": float(top_offset),
+            },
+        )
     return wall
 
 
@@ -392,6 +421,9 @@ def create_column(
     b: float | None = None,
     tw: float | None = None,
     tf: float | None = None,
+    top_level_guid: str | None = None,
+    base_offset: float = 0.0,
+    top_offset: float = 0.0,
 ) -> ifcopenshell.entity_instance:
     """Cria um IfcColumn com perfil real de acordo com os parâmetros recebidos."""
     with mutate(entry) as f:
@@ -418,6 +450,10 @@ def create_column(
                 "width": width, "depth": depth, "height": height,
                 "profile": profile, "shape": shape,
                 "h": h, "b": b, "tw": tw, "tf": tf,
+                "base_level_guid": storey_guid,
+                "top_level_guid": top_level_guid,
+                "base_offset": float(base_offset),
+                "top_offset": float(top_offset),
             },
         )
     return column
@@ -817,6 +853,48 @@ def edit_column_dimensions(
                 "h": h, "b": b, "tw": tw, "tf": tf,
             },
         )
+
+
+def _beam_profile_representation(f, body, profile_entity, length: float, trim_start: float = 0.0, trim_end: float = 0.0):
+    """`add_profile_representation` com recorte real nas pontas (IfcBooleanClippingResult
+    de um IfcHalfSpaceSolid) — usado pra "encaixar pela face" em vez de ir até
+    o eixo do apoio (ver `connectivity_service.beam_end_trims`). Convenção
+    verificada empiricamente: `normal=(0,0,-1)` em `location=(0,0,trim_start)`
+    remove o trecho z<trim_start; `normal=(0,0,1)` em `location=(0,0,length-trim_end)`
+    remove o trecho z>length-trim_end.
+    """
+    clippings = []
+    if trim_start > 1e-6:
+        clippings.append({"location": (0.0, 0.0, trim_start), "normal": (0.0, 0.0, -1.0)})
+    if trim_end > 1e-6:
+        clippings.append({"location": (0.0, 0.0, length - trim_end), "normal": (0.0, 0.0, 1.0)})
+    return ifcopenshell.api.run(
+        "geometry.add_profile_representation",
+        f, context=body, profile=profile_entity, depth=length, clippings=clippings,
+    )
+
+
+def _set_beam_end_trims_f(f: ifcopenshell.file, guid: str, trim_start: float, trim_end: float) -> None:
+    """Regenera a Representation da viga com o recorte de ponta atual (ou
+    remove o recorte, se `trim_start`/`trim_end` forem 0) — sem tocar em
+    `Pset_ParametricSource` (o comprimento lógico ali continua eixo-a-eixo;
+    o recorte é só da geometria exportada). Versão "pura" (recebe `f`
+    diretamente) para ser chamada de dentro de um `with mutate(entry) as f:`
+    já aberto — ver `connectivity_service._resync_connections`."""
+    beam = f.by_guid(guid)
+    body = get_body_context(f)
+    params = get_params_f(f, guid) or {}
+    width = float(params.get("width") or 0.0)
+    depth = float(params.get("depth") or 0.0)
+    length = float(params.get("length") or 0.0)
+    if length <= 0:
+        return
+    profile_entity = _profile_entity_for(
+        f, width, depth, params.get("profile"), params.get("shape"),
+        params.get("h"), params.get("b"), params.get("tw"), params.get("tf"),
+    )
+    rep = _beam_profile_representation(f, body, profile_entity, length, trim_start, trim_end)
+    _replace_body_representation(f, beam, rep)
 
 
 def edit_beam_dimensions(

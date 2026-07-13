@@ -97,7 +97,12 @@ export class ColumnSketchController {
 
   // ── ativação da ferramenta ────────────────────────────────────────────────
   setActive(active, level) {
-    if (active === this.active) return;
+    if (active === this.active) {
+      // A ferramenta pode continuar ativa enquanto o usuário troca de nível.
+      // Atualiza a referência em vez de manter a cota antiga silenciosamente.
+      if (active) this.level = lockedLevelCopy(level);
+      return;
+    }
     if (active) {
       this.level = lockedLevelCopy(level);
       const orbit = this.getOrbit();

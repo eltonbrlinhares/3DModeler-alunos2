@@ -43,6 +43,14 @@ import { DimensionController } from "../ifc/planSketch/DimensionController.js";
 import { miteredWallSegments, wallSegmentPlacement } from "../ifc/geometry/wallChainSegments.js";
 import { localSlabPolyline } from "../ifc/geometry/slabPrism.js";
 import TopToolbar from "./TopToolbar.jsx";
+import ProjectBrowser from "./ProjectBrowser.jsx";
+import {
+  VIEW_TYPES,
+  createSectionView,
+  nextSectionName,
+  reconcileViews,
+} from "../view/viewModel.js";
+import { loadViewState, saveViewState } from "../view/viewStorage.js";
 
 const DEFAULT_COLUMN_HEIGHT = 3; // m — altura aplicada aos pilares ao converter a planta em 3D
 
@@ -141,6 +149,9 @@ export default function IfcPanel({
   const [gridsVisible, setGridsVisible] = useState(true);
   const [newLevel, setNewLevel] = useState({ name: "Level", elevation: 3 });
   const [gridForm, setGridForm] = useState({ nu: 3, nv: 3, spacing: 5 });
+  // ── navegador do projeto / vistas BIM ──
+  const [views, setViews] = useState([]);
+  const [activeViewId, setActiveViewId] = useState(null);
 
   // ── ferramentas de planta 2D → 3D / Cota (toolbar superior) ──
   const [sketchTool, setSketchTool] = useState(null); // null | "wall" | "column" | "beam" | "footing" | "slab" | "dimension"
@@ -180,6 +191,10 @@ export default function IfcPanel({
   const levelsRef = useRef(levels);
   const gridsRef = useRef(grids);
   const activeLevelGuidRef = useRef(activeLevelGuid);
+  const viewsRef = useRef(views);
+  const activeViewIdRef = useRef(activeViewId);
+  const loadedViewsModelRef = useRef(null);
+  const autoCreatingModelRef = useRef(false);
   const sketchToolRef = useRef(sketchTool);
   modelIdRef.current = modelId;
   selectedRef.current = selected;
@@ -188,6 +203,8 @@ export default function IfcPanel({
   levelsRef.current = levels;
   gridsRef.current = grids;
   activeLevelGuidRef.current = activeLevelGuid;
+  viewsRef.current = views;
+  activeViewIdRef.current = activeViewId;
   sketchToolRef.current = sketchTool;
 
   const fail = useCallback((e) => {
@@ -204,6 +221,38 @@ export default function IfcPanel({
       lvls[0] ??
       { guid: null, name: "Level 0", elevation: 0 }
     );
+  };
+
+  // Reaplica clipping, visibilidade e câmera da vista ativa após mudanças
+  // incrementais na cena (inserção, edição ou movimentação de um produto).
+  const reapplyActiveView = useCallback(() => {
+    const current = viewsRef.current.find(
+      (view) => view.id === activeViewIdRef.current
+    );
+    if (!current) return false;
+    const level = levelsRef.current.find(
+      (item) => item.guid === current.levelId
+    );
+    return canvasRef.current?.applyView?.({
+      ...current,
+      ...(level ? { _levelElevation: Number(level.elevation ?? 0) } : {}),
+    }) ?? false;
+  }, [canvasRef]);
+
+  // Retorna o nível superior quando a altura digitada coincide com uma cota
+  // existente. Assim, elementos criados pela planta também ficam vinculados.
+  const matchingTopLevelGuid = (baseLevelGuid, height, tolerance = 0.08) => {
+    const base = levelsRef.current.find((level) => level.guid === baseLevelGuid);
+    if (!base) return null;
+    const target = Number(base.elevation ?? 0) + Number(height ?? 0);
+    const candidate = [...levelsRef.current]
+      .filter((level) => level.guid !== baseLevelGuid)
+      .map((level) => ({
+        guid: level.guid,
+        delta: Math.abs(Number(level.elevation ?? 0) - target),
+      }))
+      .sort((a, b) => a.delta - b.delta)[0];
+    return candidate && candidate.delta <= tolerance ? candidate.guid : null;
   };
 
   // ── setup three: manager + datums + gizmo + seleção + inserção ────────────
@@ -232,6 +281,7 @@ export default function IfcPanel({
       dom,
       scene,
       orbit,
+      getOrbit: () => canvasRef.current?.getOrbitControls?.() ?? orbitRef.current ?? orbit,
       getManager: () => mgrRef.current,
       onCommit: (mesh, params) => applyTransform(mesh, params),
     });
@@ -244,9 +294,9 @@ export default function IfcPanel({
     const insertion = new InsertionController({
       api: ifcApi,
       getScene: () => scene,
-      getCamera: () => camera,
+      getCamera: () => canvasRef.current?.getCamera?.() ?? cameraRef.current ?? camera,
       getDom: () => dom,
-      getOrbit: () => orbit,
+      getOrbit: () => canvasRef.current?.getOrbitControls?.() ?? orbitRef.current ?? orbit,
       getGrids: () => gridsRef.current,
       getLevels: () => levelsRef.current,
       getDatumManager: () => datumRef.current,
@@ -262,6 +312,7 @@ export default function IfcPanel({
       setInsertMode,
       onError: fail,
       onHistoryPush: (count) => pushHistory(count),
+      onSceneChanged: reapplyActiveView,
     });
     insertion.attach();
     insertionRef.current = insertion;
@@ -269,9 +320,9 @@ export default function IfcPanel({
     // ferramenta "Parede" (planta 2D, linhas duplas) — toolbar superior
     const wallSketch = new WallSketchController({
       getScene: () => scene,
-      getCamera: () => camera,
+      getCamera: () => canvasRef.current?.getCamera?.() ?? cameraRef.current ?? camera,
       getDom: () => dom,
-      getOrbit: () => orbit,
+      getOrbit: () => canvasRef.current?.getOrbitControls?.() ?? orbitRef.current ?? orbit,
       getGrids: () => gridsRef.current,
       getDatumManager: () => datumRef.current,
     });
@@ -287,9 +338,9 @@ export default function IfcPanel({
     // inserção direta em 3D já usa) no instante de cada clique.
     const sketchDeps = {
       getScene: () => scene,
-      getCamera: () => camera,
+      getCamera: () => canvasRef.current?.getCamera?.() ?? cameraRef.current ?? camera,
       getDom: () => dom,
-      getOrbit: () => orbit,
+      getOrbit: () => canvasRef.current?.getOrbitControls?.() ?? orbitRef.current ?? orbit,
       getGrids: () => gridsRef.current,
       getDatumManager: () => datumRef.current,
       getForm: () => formRef.current,
@@ -329,9 +380,9 @@ export default function IfcPanel({
     // ferramenta "Cota" — mede/edita paramétricamente um trecho de parede
     const dimension = new DimensionController({
       getScene: () => scene,
-      getCamera: () => camera,
+      getCamera: () => canvasRef.current?.getCamera?.() ?? cameraRef.current ?? camera,
       getDom: () => dom,
-      getOrbit: () => orbit,
+      getOrbit: () => canvasRef.current?.getOrbitControls?.() ?? orbitRef.current ?? orbit,
       getWallSketch: () => wallSketchRef.current,
       getIfcManager: () => mgrRef.current,
       getModelId: () => modelIdRef.current,
@@ -352,6 +403,7 @@ export default function IfcPanel({
     // ou enquanto a ferramenta Parede/Cota estiver ativa.
     const selection = new SelectionController({
       camera,
+      getCamera: () => canvasRef.current?.getCamera?.() ?? cameraRef.current ?? camera,
       dom,
       getManager: () => mgrRef.current,
       onPick: (guid) => selectGuid(guid),
@@ -404,7 +456,8 @@ export default function IfcPanel({
     footingSketchRef.current?.setActive(sketchTool === "footing", level);
     slabSketchRef.current?.setActive(sketchTool === "slab", level);
     dimensionRef.current?.setActive(sketchTool === "dimension");
-  }, [sketchTool]);
+    canvasRef.current?.setActiveLevel?.(level);
+  }, [sketchTool, activeLevelGuid, canvasRef]);
 
   useEffect(() => {
     wallSketchRef.current?.setThickness(wallThickness);
@@ -675,11 +728,62 @@ export default function IfcPanel({
     );
   }, [levels]);
 
+  // Reconcilia níveis IFC com as plantas e restaura as vistas salvas por modelo.
+  useEffect(() => {
+    if (!modelId) {
+      loadedViewsModelRef.current = null;
+      setViews([]);
+      setActiveViewId(null);
+      return;
+    }
+    if (loadedViewsModelRef.current !== modelId) {
+      loadedViewsModelRef.current = modelId;
+      const restored = loadViewState(modelId, levels);
+      setViews(restored.views);
+      setActiveViewId(restored.activeViewId);
+      return;
+    }
+    setViews((current) => reconcileViews(current, levels));
+  }, [modelId, levels]);
+
+  useEffect(() => {
+    if (!modelId || !views.length) return;
+    saveViewState(modelId, { views, activeViewId });
+  }, [modelId, views, activeViewId]);
+
+  // Aplica a vista ativa no ThreeCanvas. A elevação absoluta do nível é
+  // injetada apenas em runtime; o objeto persistido continua independente.
+  useEffect(() => {
+    const view = views.find((item) => item.id === activeViewId);
+    if (!view) return;
+    const level = levels.find((item) => item.guid === view.levelId);
+    canvasRef.current?.applyView?.({
+      ...view,
+      ...(level ? { _levelElevation: Number(level.elevation ?? 0) } : {}),
+    });
+    const nextCamera = canvasRef.current?.getCamera?.();
+    const nextOrbit = canvasRef.current?.getOrbitControls?.();
+    cameraRef.current = nextCamera ?? cameraRef.current;
+    orbitRef.current = nextOrbit ?? orbitRef.current;
+    datumRef.current?.setCamera?.(nextCamera);
+    transformRef.current?.setCamera?.(nextCamera);
+    // Em vistas ortográficas, evita editar acidentalmente com gizmos 3D.
+    transformRef.current?.setEnabled?.(view.type === VIEW_TYPES.THREE_D && workPlaneControls);
+  }, [activeViewId, views, levels, workPlaneControls, canvasRef]);
+
   // ── dados ────────────────────────────────────────────────────────────────
   const refreshMesh = useCallback(async (id) => {
     const bbox = mgrRef.current?.loadModel(await ifcApi.mesh(id));
     datumRef.current?.setBBox(bbox); // dimensiona os planos de nível
-  }, []);
+    const current = viewsRef.current.find((view) => view.id === activeViewIdRef.current);
+    if (current) {
+      const level = levelsRef.current.find((item) => item.guid === current.levelId);
+      canvasRef.current?.applyView?.({
+        ...current,
+        ...(level ? { _levelElevation: Number(level.elevation ?? 0) } : {}),
+      });
+    }
+  }, [canvasRef]);
 
   // carrega níveis + grids e os desenha na camada de datums
   const refreshDatums = useCallback(async (id) => {
@@ -688,6 +792,7 @@ export default function IfcPanel({
     setGrids(grds);
     datumRef.current?.setLevels(lvls);
     datumRef.current?.setGrids(grds);
+    return { levels: lvls, grids: grds };
   }, []);
 
   const refreshLists = useCallback(async (id) => {
@@ -787,22 +892,70 @@ export default function IfcPanel({
   };
 
   // ── ações de modelo ───────────────────────────────────────────────────────
-  const newModel = async () => {
+  const initializeBlankModel = async ({ automatic = false } = {}) => {
+    if (autoCreatingModelRef.current) return modelIdRef.current;
+    autoCreatingModelRef.current = true;
     try {
       setBusy(true);
-      setStatus("Criando modelo…");
+      setStatus(automatic ? "Preparando um modelo novo…" : "Criando modelo…");
       const { model_id } = await ifcApi.createModel("editor");
       await ifcApi.spatialBootstrap(model_id, {});
+      setLevels([]);
+      setViews([]);
+      setActiveViewId(null);
       setModelId(model_id);
       await refreshLists(model_id);
       await refreshMesh(model_id);
-      await refreshDatums(model_id);
-      setStatus(`Modelo ${model_id.slice(0, 8)} pronto.`);
+      const datums = await refreshDatums(model_id);
+
+      // Abre diretamente a planta do primeiro nível. As ferramentas estruturais
+      // dependem de uma vista em planta para localizar corretamente os pontos de
+      // grid, portanto deixar a vista 3D como inicial produzia cliques sem efeito.
+      const initialViews = reconcileViews([], datums.levels);
+      const firstLevel = datums.levels[0] ?? null;
+      const initialPlan = firstLevel
+        ? initialViews.find(
+            (view) =>
+              view.type === VIEW_TYPES.PLAN &&
+              view.levelId === (firstLevel.guid ?? firstLevel.id)
+          )
+        : null;
+      loadedViewsModelRef.current = model_id;
+      setViews(initialViews);
+      setActiveViewId(
+        initialPlan?.id ??
+          initialViews.find((view) => view.type === VIEW_TYPES.THREE_D)?.id ??
+          null
+      );
+      if (firstLevel) setActiveLevelGuid(firstLevel.guid ?? firstLevel.id);
+
+      setStatus(
+        automatic
+          ? `Modelo ${model_id.slice(0, 8)} criado automaticamente. Crie ou selecione um grid para começar.`
+          : `Modelo ${model_id.slice(0, 8)} pronto.`
+      );
       setBusy(false);
+      autoCreatingModelRef.current = false;
+      return model_id;
     } catch (e) {
+      autoCreatingModelRef.current = false;
       fail(e);
+      return null;
     }
   };
+
+  const newModel = async () => initializeBlankModel({ automatic: false });
+
+  // O editor IFC passa a abrir pronto para modelar. Antes, os botões de nível
+  // e grid pareciam funcionar, mas retornavam silenciosamente enquanto nenhum
+  // modelo havia sido criado pelo botão "Novo".
+  useEffect(() => {
+    if (!modelIdRef.current && !autoCreatingModelRef.current) {
+      initializeBlankModel({ automatic: true });
+    }
+    // Executa apenas na abertura do painel IFC.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   const upload = async (file) => {
     if (!file) return;
@@ -810,6 +963,9 @@ export default function IfcPanel({
       setBusy(true);
       setStatus(`Enviando ${file.name}…`);
       const { model_id } = await ifcApi.uploadModel(file);
+      setLevels([]);
+      setViews([]);
+      setActiveViewId(null);
       setModelId(model_id);
       await refreshLists(model_id);
       await refreshMesh(model_id);
@@ -891,7 +1047,7 @@ export default function IfcPanel({
   // estado ATUAL das demais (que não mudou) para formar o snapshot global.
   const pushSketchHistory = useCallback(
     (toolKey, beforeLocal, afterLocal) => {
-      const afterAll = snapshotPlanSketches(); // já reflete a mudança (aplicada antes deste callback)
+      const afterAll = { ...snapshotPlanSketches(), [toolKey]: afterLocal };
       const beforeAll = { ...afterAll, [toolKey]: beforeLocal };
       pushHistory(0, beforeAll, afterAll);
     },
@@ -944,15 +1100,43 @@ export default function IfcPanel({
   // ── criar elemento: liga/desliga o modo de inserção da ferramenta atual ────
   const createElement = () => {
     const insertion = insertionRef.current;
-    if (!modelId || !insertion) return;
+    if (!modelIdRef.current || !insertion) {
+      setStatus("O modelo ainda está sendo preparado.");
+      return;
+    }
     if (insertMode) insertion.cancel();
-    else insertion.begin(elemType);
+    else {
+      const requiresGrid = new Set(["column", "beam", "footing"]);
+      if (requiresGrid.has(elemType) && !(gridsRef.current?.length > 0)) {
+        setStatus("Crie primeiro um grid U/V para inserir esse elemento.");
+        return;
+      }
+      const levelId = activeLevelGuidRef.current ?? activeInsertionLevel()?.guid;
+      const plan = viewsRef.current.find(
+        (view) => view.type === VIEW_TYPES.PLAN && view.levelId === levelId
+      );
+      if (plan) setActiveViewId(plan.id);
+      insertion.begin(elemType);
+    }
   };
 
   // ── toolbar superior: Parede/Pilar/Viga/Fundação/Laje/Cota (mutuamente
   // exclusivas com o dropdown "+ Elemento") ──
   const selectSketchTool = (tool) => {
     if (tool) {
+      if (!modelIdRef.current) {
+        setStatus("O modelo ainda está sendo preparado.");
+        return;
+      }
+
+      const requiresGrid = new Set(["column", "beam", "footing", "slab"]);
+      if (requiresGrid.has(tool) && !(gridsRef.current?.length > 0)) {
+        setStatus(
+          `${tool === "column" ? "Pilar" : tool === "beam" ? "Viga" : tool === "slab" ? "Laje" : "Fundação"}: crie primeiro um grid U/V no painel lateral.`
+        );
+        return;
+      }
+
       insertionRef.current?.cancel();
       transformRef.current?.detach();
       setSelected(null);
@@ -961,6 +1145,17 @@ export default function IfcPanel({
       // ferramenta de planta lê a cada clique), quando o id bate com um
       // elemType — não é o caso de "dimension".
       if (ELEMENT_FORMS[tool]) setElemType(tool);
+
+      // As ferramentas estruturais trabalham em planta. Abrir automaticamente
+      // a planta do nível ativo evita que o raycast use uma elevação/corte ou a
+      // perspectiva 3D, situação em que os cliques não encontravam o grid.
+      const levelId = activeLevelGuidRef.current ?? activeInsertionLevel()?.guid;
+      const plan = viewsRef.current.find(
+        (view) => view.type === VIEW_TYPES.PLAN && view.levelId === levelId
+      );
+      if (plan) {
+        setActiveViewId(plan.id);
+      }
     }
     setSketchTool(tool);
   };
@@ -991,6 +1186,9 @@ export default function IfcPanel({
           position,
           rotation_z,
           storey_guid,
+          top_level_guid: matchingTopLevelGuid(storey_guid, height),
+          base_offset: 0,
+          top_offset: 0,
         });
         guids.push(guid);
         created += 1;
@@ -1041,6 +1239,9 @@ export default function IfcPanel({
         position: [origin.x, origin.y, origin.z],
         rotation_z: 0,
         storey_guid,
+        top_level_guid: matchingTopLevelGuid(storey_guid, height),
+        base_offset: 0,
+        top_offset: 0,
         ...(profile && shape && h && b && tw && tf ? { profile, shape, h, b, tw, tf } : {}),
       });
       columnSketch.markConverted(marker.id, guid);
@@ -1314,6 +1515,7 @@ export default function IfcPanel({
       await ifcApi.editPlacement(modelIdRef.current, { guid, ...params });
       const pj = await ifcApi.productMesh(modelIdRef.current, guid);
       mgrRef.current?.replaceProduct(pj);
+      reapplyActiveView();
       const fresh = mgrRef.current?.getMesh(guid);
       if (fresh) transformRef.current?.attach(fresh);
       if (selectedRef.current?.guid === guid) {
@@ -1377,6 +1579,7 @@ export default function IfcPanel({
         thickness: Number(dims.thickness),
       });
       mgrRef.current?.replaceProduct(await ifcApi.productMesh(modelId, guid));
+      reapplyActiveView();
       const fresh = mgrRef.current?.getMesh(guid);
       if (fresh) transformRef.current?.attach(fresh);
       setStatus("Dimensões atualizadas.");
@@ -1391,6 +1594,7 @@ export default function IfcPanel({
   // usado por todo applyXEdit abaixo
   const refreshAfterEdit = async (guid) => {
     mgrRef.current?.replaceProduct(await ifcApi.productMesh(modelId, guid));
+    reapplyActiveView();
     const fresh = mgrRef.current?.getMesh(guid);
     if (fresh) transformRef.current?.attach(fresh);
     try {
@@ -1567,14 +1771,18 @@ export default function IfcPanel({
   }, [gridsVisible]);
 
   const addLevel = async () => {
-    if (!modelId) return;
+    const id = modelIdRef.current;
+    if (!id) {
+      setStatus("O modelo ainda está sendo preparado. Tente novamente em instantes.");
+      return;
+    }
     try {
       setBusy(true);
-      await ifcApi.createLevel(modelId, {
+      await ifcApi.createLevel(id, {
         name: newLevel.name || "Level",
         elevation: Number(newLevel.elevation),
       });
-      await refreshDatums(modelId);
+      await refreshDatums(id);
       setStatus(`Nível "${newLevel.name}" criado.`);
       setBusy(false);
     } catch (e) {
@@ -1587,7 +1795,9 @@ export default function IfcPanel({
     try {
       await ifcApi.editLevel(modelId, guid, { elevation: Number(elevation) });
       await refreshDatums(modelId);
-      setStatus("Cota do nível atualizada.");
+      await refreshMesh(modelId);
+      await refreshLists(modelId);
+      setStatus("Cota do nível e elementos vinculados atualizada.");
     } catch (e) {
       fail(e);
     }
@@ -1611,6 +1821,8 @@ export default function IfcPanel({
         }
       }
       await refreshDatums(modelId);
+      await refreshMesh(modelId);
+      await refreshLists(modelId);
       setStatus("Nível removido.");
       setBusy(false);
     } catch (e) {
@@ -1619,22 +1831,34 @@ export default function IfcPanel({
   };
 
   const addGrid = async () => {
-    if (!modelId) return;
+    const id = modelIdRef.current;
+    if (!id) {
+      setStatus("O modelo ainda está sendo preparado. Tente novamente em instantes.");
+      return;
+    }
     try {
       setBusy(true);
       const { nu, nv, spacing } = gridForm;
+      const countU = Math.max(1, Math.floor(Number(nu) || 0));
+      const countV = Math.max(1, Math.floor(Number(nv) || 0));
       const s = Number(spacing);
-      const u = Array.from({ length: Number(nu) }, (_, i) => ({
+      if (!Number.isFinite(s) || s <= 0) {
+        throw new Error("O espaçamento do grid deve ser maior que zero.");
+      }
+      const u = Array.from({ length: countU }, (_, i) => ({
         tag: String.fromCharCode(65 + i), // A, B, C…
         x: i * s,
       }));
-      const v = Array.from({ length: Number(nv) }, (_, i) => ({
+      const v = Array.from({ length: countV }, (_, i) => ({
         tag: String(i + 1), // 1, 2, 3…
         y: i * s,
       }));
-      await ifcApi.createGrid(modelId, { name: "Grid", u, v });
-      await refreshDatums(modelId);
-      setStatus(`Grid ${nu}×${nv} criado.`);
+      await ifcApi.createGrid(id, { name: "Grid", u, v });
+      await refreshDatums(id);
+      datumRef.current?.setGridsVisible(true);
+      setGridsVisible(true);
+      canvasRef.current?.fitViewToModel?.();
+      setStatus(`Grid ${countU}×${countV} criado. Selecione Pilar, Viga ou Laje e clique nas interseções.`);
       setBusy(false);
     } catch (e) {
       fail(e);
@@ -1652,6 +1876,101 @@ export default function IfcPanel({
     } catch (e) {
       fail(e);
     }
+  };
+
+  // ── ações do Navegador do Projeto ────────────────────────────────────────
+  const storeCurrentCamera = () => {
+    const state = canvasRef.current?.getActiveViewState?.();
+    if (!state?.viewId || !state.camera) return;
+    setViews((current) => current.map((view) =>
+      view.id === state.viewId ? { ...view, camera: state.camera } : view
+    ));
+  };
+
+  const openView = (viewId) => {
+    if (!viewId || viewId === activeViewIdRef.current) return;
+    storeCurrentCamera();
+    const target = viewsRef.current.find((view) => view.id === viewId);
+    if (target?.type !== VIEW_TYPES.PLAN && sketchToolRef.current) {
+      setSketchTool(null);
+      insertionRef.current?.cancel();
+      setStatus("Ferramenta de modelagem encerrada ao sair da planta.");
+    }
+    if (target?.type === VIEW_TYPES.PLAN && target.levelId) {
+      setActiveLevelGuid(target.levelId);
+    }
+    setActiveViewId(viewId);
+    setStatus(`Vista “${target?.name ?? viewId}” aberta.`);
+  };
+
+  const setActiveLevelFromBrowser = (levelId) => {
+    setActiveLevelGuid(levelId);
+    const level = levelsRef.current.find((item) => item.guid === levelId);
+    canvasRef.current?.setActiveLevel?.(level);
+    setStatus(`Nível ativo: ${level?.name ?? levelId}.`);
+  };
+
+  const updateView = (viewId, patch) => {
+    setViews((current) => current.map((view) =>
+      view.id === viewId ? { ...view, ...patch } : view
+    ));
+  };
+
+  const renameView = (viewId, name) => updateView(viewId, { name });
+
+  const deleteView = (viewId) => {
+    const target = viewsRef.current.find((view) => view.id === viewId);
+    const isGenerated = target?.generated === true;
+    if (isGenerated) {
+      window.alert("Esta vista é gerada automaticamente. Duplique-a para criar uma versão editável.");
+      return;
+    }
+    setViews((current) => {
+      const remaining = current.filter((view) => view.id !== viewId);
+      if (activeViewIdRef.current === viewId) {
+        const fallback = remaining.find((view) => view.type === VIEW_TYPES.THREE_D) ?? remaining[0];
+        setActiveViewId(fallback?.id ?? null);
+      }
+      return remaining;
+    });
+  };
+
+  const duplicateView = (viewId) => {
+    const source = viewsRef.current.find((view) => view.id === viewId);
+    if (!source) return;
+    const copy = {
+      ...source,
+      id: `${source.id}-copy-${Date.now().toString(36)}`,
+      name: `${source.name} - Cópia`,
+      generated: false,
+      camera: source.camera ? { ...source.camera } : null,
+      visibility: { ...(source.visibility ?? {}) },
+      ...(source.viewRange ? { viewRange: { ...source.viewRange } } : {}),
+      ...(source.cropBox ? { cropBox: { ...source.cropBox } } : {}),
+    };
+    setViews((current) => [...current, copy]);
+    setActiveViewId(copy.id);
+  };
+
+  const createSection = () => {
+    const name = window.prompt("Nome do corte:", nextSectionName(viewsRef.current));
+    if (!name?.trim()) return;
+    const axisInput = window.prompt(
+      "Direção do corte: digite X para olhar no eixo X ou Y para olhar no eixo Y.",
+      "X",
+    );
+    const axis = String(axisInput ?? "X").trim().toUpperCase() === "Y" ? "Y" : "X";
+    const coord = Number(window.prompt(`Coordenada ${axis} do plano de corte (m):`, "0"));
+    const depth = Math.max(0.1, Number(window.prompt("Profundidade do corte (m):", "30")) || 30);
+    const activeLevelElevation = Number(activeInsertionLevel()?.elevation ?? 0);
+    const origin = axis === "X"
+      ? [Number.isFinite(coord) ? coord : 0, 0, activeLevelElevation]
+      : [0, Number.isFinite(coord) ? coord : 0, activeLevelElevation];
+    const direction = axis === "X" ? [1, 0, 0] : [0, 1, 0];
+    const section = createSectionView({ name: name.trim(), origin, direction, farOffset: depth });
+    setViews((current) => [...current, section]);
+    setActiveViewId(section.id);
+    setStatus(`Corte “${section.name}” criado.`);
   };
 
   // tecla Delete remove o selecionado
@@ -1709,6 +2028,21 @@ export default function IfcPanel({
         onRedo={globalRedo}
         canUndo={historyRef.current.past.length > 0}
         canRedo={historyRef.current.future.length > 0}
+      />
+      <ProjectBrowser
+        levels={levels}
+        views={views}
+        activeViewId={activeViewId}
+        activeLevelId={activeLevelGuid}
+        disabled={!modelId || busy}
+        onOpenView={openView}
+        onSetActiveLevel={setActiveLevelFromBrowser}
+        onRenameView={renameView}
+        onDeleteView={deleteView}
+        onDuplicateView={duplicateView}
+        onUpdateView={updateView}
+        onCreateSection={createSection}
+        onFitView={() => canvasRef.current?.fitViewToModel?.()}
       />
     <div style={S.panel}>
       <div style={S.head}>

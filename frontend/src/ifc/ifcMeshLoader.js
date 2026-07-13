@@ -82,5 +82,6 @@ export function edgesForMesh(mesh, color = 0x374151) {
   line.rotation.copy(mesh.rotation);
   line.scale.copy(mesh.scale);
   line.name = `${mesh.name}:edges`;
+  line.userData.ifc = { ...(mesh.userData.ifc ?? {}) };
   return line;
 }

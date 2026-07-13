@@ -37,6 +37,9 @@ def create_wall(req: CreateWallGeomRequest, entry: ModelEntry = Depends(get_entr
             position=tuple(req.position),
             rotation_z=req.rotation_z,
             storey_guid=req.storey_guid,
+            top_level_guid=req.top_level_guid,
+            base_offset=req.base_offset,
+            top_offset=req.top_offset,
         )
     except RuntimeError as e:
         raise HTTPException(400, f"falha ao criar parede: {e}")
@@ -112,6 +115,9 @@ def create_column(req: CreateColumnRequest, entry: ModelEntry = Depends(get_entr
             b=req.b,
             tw=req.tw,
             tf=req.tf,
+            top_level_guid=req.top_level_guid,
+            base_offset=req.base_offset,
+            top_offset=req.top_offset,
         )
     except RuntimeError as e:
         raise HTTPException(400, f"falha ao criar coluna: {e}")
