@@ -81,6 +81,11 @@ export class IfcDatumManager {
     }
   }
 
+
+  setCamera(camera) {
+    this.camera = camera;
+  }
+
   // ── geometria dos datums a partir da bbox + grids ─────────────────────────
   _datumBounds() {
     const xs = [];

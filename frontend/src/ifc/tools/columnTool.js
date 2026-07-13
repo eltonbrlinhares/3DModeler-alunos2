@@ -67,6 +67,9 @@ function finishColumn(ctx) {
       position: [origin.x, origin.y, origin.z],
       rotation_z: 0,
       storey_guid: ctx.level.guid,
+      top_level_guid: ctx.snapLevelGuid ?? null,
+      base_offset: 0,
+      top_offset: 0,
       // perfil real (I/H/U/L/tubular), quando um perfil de catálogo ou
       // personalizado estiver selecionado no formulário (aba "Metálica")
       ...(profile && shape && h && b && tw && tf

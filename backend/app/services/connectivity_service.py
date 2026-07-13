@@ -19,6 +19,22 @@ recalculamos a partir de nada "por fora") + as dimensões persistidas em
 — por isso um elemento sem esse Pset (IFC externo, ou anterior à edição em
 vivo) simplesmente não participa da detecção.
 
+Além de REGISTRAR a conexão, também recortamos a geometria real da VIGA na
+FACE de quem a sustenta — pilar (as duas pontas), ou outra viga num
+cruzamento/T (a de menor seção é cortada na face da maior) — em vez de
+deixá-la sobrepor até o eixo/centro. Como o "Join Geometry" do Revit ou o
+"fitting" do Tekla. Ver `beam_end_trims` / `geometry_service._set_beam_end_trims_f`.
+O comprimento LÓGICO da viga (o que aparece no formulário de edição, e o que
+é usado pra detectar conexões) continua sendo eixo-a-eixo — só a
+Representation exportada é encurtada.
+
+Fundação→pilar e viga/pilar↔laje NÃO precisam desse recorte: do jeito que
+este app posiciona esses pares (por coincidência de cota Z — um termina
+exatamente onde o outro começa), eles já se tocam por um plano, sem entrar
+um no volume do outro. O problema de sobreposição só existe onde um
+elemento é desenhado eixo-a-eixo por dentro da seção de outro (viga↔pilar,
+viga↔viga) — pilar e laje nunca são cortados, só a viga.
+
 Todo `create_*`/`edit_*_dimensions`/edição de placement deve, em seguida,
 chamar `resync_connections()` (ou, se já estiver dentro de um
 `with mutate(entry) as f:`, `_resync_connections(f, guid)` diretamente, para
@@ -27,6 +43,8 @@ não abrir uma segunda transação de undo). Isso é feito nas ROTAS
 importação circular entre os dois serviços.
 """
 from __future__ import annotations
+
+import math
 
 import numpy as np
 import ifcopenshell
@@ -243,11 +261,125 @@ def _check_pair(f: ifcopenshell.file, a, b) -> None:
                 return
 
 
+def _box_exit_distance(dx: float, dy: float, width: float, depth: float) -> float:
+    """Distância do CENTRO de uma caixa alinhada aos eixos do mundo (`width`
+    em X, `depth` em Y — sempre o caso aqui, pilares nesta aplicação nunca
+    giram) até a face dela, na direção (dx,dy). É a conta que dá "até onde
+    encurtar a viga pra ela parar na face do pilar em vez de ir até o eixo".
+    """
+    hw, hd = width / 2.0, depth / 2.0
+    candidates = []
+    if abs(dx) > 1e-9:
+        candidates.append(hw / abs(dx))
+    if abs(dy) > 1e-9:
+        candidates.append(hd / abs(dy))
+    return min(candidates) if candidates else 0.0
+
+
+def _cross_section_area(params: dict) -> float:
+    return float(params.get("width") or 0.0) * float(params.get("depth") or 0.0)
+
+
+def _is_secondary(this_params: dict, this_guid: str, other_params: dict, other_guid: str) -> bool:
+    """Num encontro viga-viga (canto ou T), decide quem é "secundária" — a
+    que é cortada, enquanto a "primária" segue reta. Regra: a de menor seção
+    transversal é secundária (convenção usual: viga menor apoia na maior);
+    empate desempatado por GlobalId, só pra ser determinístico."""
+    a1, a2 = _cross_section_area(this_params), _cross_section_area(other_params)
+    if abs(a1 - a2) > 1e-9:
+        return a1 < a2
+    return this_guid > other_guid
+
+
+def beam_end_trims(f: ifcopenshell.file, beam) -> tuple[float, float]:
+    """Quanto encurtar cada ponta de `beam` pra ela parar na FACE de quem a
+    sustenta (como Tekla/Revit), em vez de ir até o eixo/centro dele.
+    Considera pilar (base ou topo) e outra viga (canto ou T — só se `beam`
+    for a "secundária" nesse par, ver `_is_secondary`). Fundação e laje não
+    entram aqui: do jeito que este app posiciona os elementos, eles já se
+    tocam por um plano (sem entrar um no outro) — nada a cortar."""
+    params = geo.get_params_f(f, beam.GlobalId) or {}
+    length = float(params.get("length") or 0.0)
+    if length <= 0:
+        return 0.0, 0.0
+    m = _world_matrix(f, beam)
+    p0 = _apply(m, (0.0, 0.0, 0.0))
+    p1 = _apply(m, (0.0, 0.0, length))
+    dx, dy = p1[0] - p0[0], p1[1] - p0[1]
+    norm = math.hypot(dx, dy)
+    if norm < 1e-9:
+        return 0.0, 0.0
+    dx, dy = dx / norm, dy / norm
+
+    def column_trim(point: np.ndarray) -> float:
+        for col in f.by_type("IfcColumn"):
+            cparams = geo.get_params_f(f, col.GlobalId) or {}
+            height = float(cparams.get("height") or 0.0)
+            cm = _world_matrix(f, col)
+            for local_z in (0.0, height):  # base ou topo do pilar
+                cp = _apply(cm, (0.0, 0.0, local_z))
+                if np.linalg.norm(point - cp) <= TOLERANCE:
+                    width = float(cparams.get("width") or 0.0)
+                    depth = float(cparams.get("depth") or 0.0)
+                    return _box_exit_distance(dx, dy, width, depth)
+        return 0.0
+
+    def beam_trim(point: np.ndarray) -> float:
+        for other in f.by_type("IfcBeam"):
+            if other.GlobalId == beam.GlobalId:
+                continue
+            oparams = geo.get_params_f(f, other.GlobalId) or {}
+            if not _is_secondary(params, beam.GlobalId, oparams, other.GlobalId):
+                continue  # `beam` é a primária nesse par -- quem corta é a outra
+            o0, o1 = _segment_endpoints(f, other)
+            olen = float(np.linalg.norm(o1 - o0))
+            if olen < 1e-9:
+                continue
+            odir = (o1 - o0)[:2] / olen
+            near_end = (
+                np.linalg.norm(point - o0) <= TOLERANCE
+                or np.linalg.norm(point - o1) <= TOLERANCE
+            )
+            dist_mid, t = _point_segment_distance(point, o0, o1)
+            near_mid = dist_mid <= TOLERANCE and 0.02 < t < 0.98
+            if not (near_end or near_mid):
+                continue
+            owidth = float(oparams.get("width") or 0.0)
+            perp = np.array([-odir[1], odir[0]])  # eixo "largura" da outra viga, em planta
+            proj_w = abs(dx * perp[0] + dy * perp[1])
+            if proj_w > 1e-6:
+                return owidth / 2.0 / proj_w
+        return 0.0
+
+    trim_start = column_trim(p0) or beam_trim(p0)
+    trim_end = column_trim(p1) or beam_trim(p1)
+    # segurança: nunca deixar a viga com comprimento residual negativo/quase
+    # zero (apoios muito próximos, vão curto demais)
+    total = trim_start + trim_end
+    if total >= length * 0.9:
+        scale = (length * 0.9) / total if total > 0 else 0.0
+        trim_start *= scale
+        trim_end *= scale
+    return trim_start, trim_end
+
+
+def _apply_beam_trims(f: ifcopenshell.file, beam) -> None:
+    trim_start, trim_end = beam_end_trims(f, beam)
+    geo._set_beam_end_trims_f(f, beam.GlobalId, trim_start, trim_end)
+
+
 def _resync_connections(f: ifcopenshell.file, guid: str) -> None:
     """Recalcula do zero as conexões de `guid` com os demais elementos
     estruturais: remove as antigas e detecta de novo a partir da geometria
     atual. Chamar dentro de um `with mutate(entry) as f:` já aberto pelo
-    criador/editor do elemento (mesmo passo de undo)."""
+    criador/editor do elemento (mesmo passo de undo).
+
+    Também reaplica o recorte de ponta de TODA viga do modelo sempre que
+    `guid` for viga ou pilar — não dá pra olhar só quem está conectado
+    AGORA: mover um pilar, ou mudar a seção de uma viga, pode fazer uma
+    conexão sumir (a outra ponta precisa voltar a ter corte 0) ou trocar
+    quem é "primária"/"secundária" num encontro viga-viga. Recalcular tudo
+    é barato na escala deste projeto (casa térrea)."""
     inst = f.by_guid(guid)
     if inst.is_a() not in _STRUCTURAL_TYPES:
         return
@@ -255,6 +387,10 @@ def _resync_connections(f: ifcopenshell.file, guid: str) -> None:
     others = [o for t in _STRUCTURAL_TYPES for o in f.by_type(t) if o.GlobalId != guid]
     for other in others:
         _check_pair(f, inst, other)
+
+    if inst.is_a() in ("IfcBeam", "IfcColumn"):
+        for beam in f.by_type("IfcBeam"):
+            _apply_beam_trims(f, beam)
 
 
 def resync_connections(entry: ModelEntry, guid: str) -> None:

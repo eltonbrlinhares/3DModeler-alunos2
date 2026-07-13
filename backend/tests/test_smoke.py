@@ -551,3 +551,64 @@ def test_unknown_model_returns_404():
     """model_id inexistente → 404 pela dependência get_entry."""
     assert client.get("/ifc/models/nao-existe/mesh").status_code == 404
     assert client.get("/ifc/models/nao-existe/levels").status_code == 404
+
+
+def test_level_constrained_wall_and_column_follow_elevations():
+    """Paredes/pilares entre níveis acompanham base e topo parametricamente."""
+    mid = _new_model("level-bindings")
+    storeys = client.post(
+        f"/ifc/models/{mid}/spatial/bootstrap",
+        json={
+            "storeys": [
+                {"name": "Térreo", "elevation": 0.0},
+                {"name": "Cobertura", "elevation": 3.0},
+            ]
+        },
+    ).json()["storeys"]
+    base_guid = storeys[0]["guid"]
+    top_guid = storeys[1]["guid"]
+
+    wall_guid = client.post(
+        f"/ifc/models/{mid}/geometry/wall",
+        json={
+            "name": "W-Níveis",
+            "length": 4.0,
+            "height": 3.0,
+            "thickness": 0.2,
+            "position": [0.0, 0.0, 0.0],
+            "storey_guid": base_guid,
+            "top_level_guid": top_guid,
+        },
+    ).json()["guid"]
+    column_guid = client.post(
+        f"/ifc/models/{mid}/geometry/column",
+        json={
+            "name": "C-Níveis",
+            "width": 0.4,
+            "depth": 0.4,
+            "height": 3.0,
+            "position": [5.0, 0.0, 0.0],
+            "storey_guid": base_guid,
+            "top_level_guid": top_guid,
+        },
+    ).json()["guid"]
+
+    # Elevar a cobertura alonga os dois elementos sem mover a base.
+    r = client.patch(
+        f"/ifc/models/{mid}/levels/{top_guid}", json={"elevation": 4.0}
+    )
+    assert r.status_code == 200, r.text
+    for guid in (wall_guid, column_guid):
+        bbox = client.get(f"/ifc/models/{mid}/mesh/{guid}").json()["bbox"]
+        assert abs(bbox["min"][2] - 0.0) < 1e-5
+        assert abs(bbox["max"][2] - 4.0) < 1e-5
+
+    # Elevar a base reposiciona a origem e reduz a altura até o topo fixo.
+    r = client.patch(
+        f"/ifc/models/{mid}/levels/{base_guid}", json={"elevation": 1.0}
+    )
+    assert r.status_code == 200, r.text
+    for guid in (wall_guid, column_guid):
+        bbox = client.get(f"/ifc/models/{mid}/mesh/{guid}").json()["bbox"]
+        assert abs(bbox["min"][2] - 1.0) < 1e-5
+        assert abs(bbox["max"][2] - 4.0) < 1e-5

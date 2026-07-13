@@ -50,6 +50,9 @@ class CreateWallGeomRequest(BaseModel):
     position: list[float] = Field(default=[0.0, 0.0, 0.0], min_length=3, max_length=3)
     rotation_z: float = 0.0  # radianos, em torno de Z
     storey_guid: str | None = None
+    top_level_guid: str | None = None
+    base_offset: float = 0.0
+    top_offset: float = 0.0
 
 
 class EditPlacementRequest(BaseModel):
@@ -167,6 +170,9 @@ class CreateColumnRequest(BaseModel):
     position: list[float] = Field(default=[0.0, 0.0, 0.0], min_length=3, max_length=3)
     rotation_z: float = 0.0
     storey_guid: str | None = None
+    top_level_guid: str | None = None
+    base_offset: float = 0.0
+    top_offset: float = 0.0
 
 
 class CreateBeamRequest(BaseModel):

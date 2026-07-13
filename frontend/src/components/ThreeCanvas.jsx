@@ -49,6 +49,7 @@ import {
 import { createGenerateSurface } from "./canvas/generateSurface.js";
 import { createMeshSurface }     from "./canvas/meshSurface.js";
 import { createModelIO }         from "./canvas/modelIO.js";
+import { getBimContentBounds } from "../view/viewBounds.js";
 
 // ── Constantes de cor ──────────────────────────────────────────────────────
 const COLOR_NORMAL   = 0xff2222;
@@ -105,7 +106,13 @@ const ThreeCanvas = forwardRef(function ThreeCanvas(
   const onSelectionCountChangeRef   = useRef(onSelectionCountChange);
   const exportModelRef  = useRef(null);
   const importModelRef  = useRef(null);
-  const switchViewRef = useRef((v) => {});
+  const switchViewRef = useRef(() => {});
+  const applyViewRef = useRef(() => false);
+  const getActiveViewStateRef = useRef(() => null);
+  const setActiveLevelRef = useRef(() => false);
+  const fitViewRef = useRef(() => false);
+  const setClippingPlanesRef = useRef(() => {});
+  const clearClippingPlanesRef = useRef(() => {});
 
   // Mantém callbacks sempre atualizados sem re-executar o useEffect pesado
   useEffect(() => { onSketchCommitRef.current = onSketchCommit; }, [onSketchCommit]);
@@ -193,6 +200,24 @@ const ThreeCanvas = forwardRef(function ThreeCanvas(
     setView(view) {
       switchViewRef.current?.(view);
     },
+    applyView(view) {
+      return applyViewRef.current?.(view) ?? false;
+    },
+    getActiveViewState() {
+      return getActiveViewStateRef.current?.() ?? null;
+    },
+    setActiveLevel(level) {
+      return setActiveLevelRef.current?.(level) ?? false;
+    },
+    fitViewToModel() {
+      return fitViewRef.current?.() ?? false;
+    },
+    setClippingPlanes(planes) {
+      setClippingPlanesRef.current?.(planes);
+    },
+    clearClippingPlanes() {
+      clearClippingPlanesRef.current?.();
+    },
     applySubdivisions(n, ratio) {
       applySubdivRef.current?.(n, ratio);
     },
@@ -228,6 +253,7 @@ const ThreeCanvas = forwardRef(function ThreeCanvas(
     let camera = renderSetup.camera; // will be swapped between perspective/ortho
     const scene = renderSetup.scene;
     const renderer = renderSetup.renderer;
+    renderer.localClippingEnabled = true;
     const labelRenderer = renderSetup.labelRenderer;
     const bgTexture = renderSetup.bgTexture;
     sceneInternalRef.current = scene;
@@ -336,48 +362,246 @@ const ThreeCanvas = forwardRef(function ThreeCanvas(
       return pivot.localToWorld(local);
     };
 
-    // Active view state: '3d' or 'plan'
-    let activeView = '3d';
+    // ── Sistema de vistas BIM (3D, planta, elevação e corte) ────────────────
+    const perspectiveCamera = renderSetup.camera;
+    let activeView = { id: "legacy-3d", type: "3d", name: "Vista 3D" };
 
-    const switchToView = (view) => {
-      if (view === activeView) return;
-      activeView = view;
-      if (view === 'plan') {
-        // switch to ortho camera
-        camera = orthoCamera;
-        cameraRef.current = camera;
-        // disable perspective controls, enable ortho controls
-        const p = orbitControlsRef.perspective;
-        const o = orbitControlsRef.ortho;
-        if (p) {
-          p.orbit.enabled = false;
-          p.translate.enabled = false;
-          p.rotate.enabled = false;
-        }
-        if (o) {
-          o.orbit.enabled = true;
-          o.translate.enabled = true;
-          o.rotate.enabled = true;
-        }
-      } else {
-        // switch to perspective
-        camera = renderSetup.camera;
-        cameraRef.current = camera;
-        const p = orbitControlsRef.perspective;
-        const o = orbitControlsRef.ortho;
-        if (o) {
-          o.orbit.enabled = false;
-          o.translate.enabled = false;
-          o.rotate.enabled = false;
-        }
-        if (p) {
-          p.orbit.enabled = true;
-          p.translate.enabled = true;
-          p.rotate.enabled = true;
-        }
+    const getModelBounds = () => getBimContentBounds({
+      scene,
+      pivot,
+      gridHalfSize: gridHalfSizeRef.current,
+    });
+
+    const categoryForObject = (object) => {
+      const type = object.userData?.ifc?.type ?? object.parent?.userData?.ifc?.type ?? "";
+      if (/Footing/i.test(type)) return "foundation";
+      if (/Column/i.test(type)) return "column";
+      if (/Beam/i.test(type)) return "beam";
+      if (/Slab|Roof/i.test(type)) return "slab";
+      if (/Wall/i.test(type)) return "wall";
+      return "generic";
+    };
+
+    const setMaterialClipping = (material, planes) => {
+      if (!material) return;
+      const materials = Array.isArray(material) ? material : [material];
+      for (const item of materials) {
+        item.clippingPlanes = planes.length ? planes : null;
+        item.clipIntersection = false;
+        item.needsUpdate = true;
       }
     };
-    // expose switch function to outside via ref
+
+    const applyClippingPlanes = (planes = []) => {
+      const root = scene.getObjectByName("ifc-root");
+      root?.traverse((object) => setMaterialClipping(object.material, planes));
+    };
+    setClippingPlanesRef.current = applyClippingPlanes;
+    clearClippingPlanesRef.current = () => applyClippingPlanes([]);
+
+    const applyVisibility = (visibility = {}) => {
+      const root = scene.getObjectByName("ifc-root");
+      root?.traverse((object) => {
+        if (!object.isMesh && !object.isLine && !object.isLineSegments) return;
+        const category = categoryForObject(object);
+        object.visible = visibility[category] !== false;
+      });
+      const levelsGroup = scene.getObjectByName("datum-levels");
+      const gridsGroup = scene.getObjectByName("datum-grids");
+      const intersectionsGroup = scene.getObjectByName("datum-intersections");
+      if (levelsGroup) levelsGroup.visible = visibility.level !== false;
+      if (gridsGroup) gridsGroup.visible = visibility.grid !== false;
+      if (intersectionsGroup) intersectionsGroup.visible = visibility.grid !== false;
+    };
+
+    const planeAt = (normalArray, pointArray) => new THREE.Plane()
+      .setFromNormalAndCoplanarPoint(
+        new THREE.Vector3(...normalArray).normalize(),
+        new THREE.Vector3(...pointArray),
+      );
+
+    const clippingForView = (view) => {
+      if (!view) return [];
+      if (view.type === "plan") {
+        const elevation = Number(view._levelElevation ?? 0);
+        const range = view.viewRange ?? {};
+        const lower = elevation + Number(range.depthOffset ?? range.bottomOffset ?? -0.5);
+        const upper = elevation + Number(range.topOffset ?? 2.3);
+        return [
+          planeAt([0, 0, 1], [0, 0, Math.min(lower, upper)]),
+          planeAt([0, 0, -1], [0, 0, Math.max(lower, upper)]),
+        ];
+      }
+      if (view.type === "elevation" || view.type === "section") {
+        const direction = new THREE.Vector3(...(view.direction ?? [1, 0, 0])).normalize();
+        const origin = new THREE.Vector3(...(view.origin ?? [0, 0, 0]));
+        const near = Number(view.nearOffset ?? 0);
+        const far = Number(view.type === "section" ? view.farOffset ?? 30 : view.depth ?? 1000);
+        const nearPoint = origin.clone().addScaledVector(direction, near);
+        const farPoint = origin.clone().addScaledVector(direction, Math.max(near + 0.01, far));
+        return [
+          new THREE.Plane().setFromNormalAndCoplanarPoint(direction, nearPoint),
+          new THREE.Plane().setFromNormalAndCoplanarPoint(direction.clone().negate(), farPoint),
+        ];
+      }
+      if (view.type === "3d" && view.sectionBox?.enabled) {
+        const min = view.sectionBox.min ?? [-10, -10, -10];
+        const max = view.sectionBox.max ?? [10, 10, 10];
+        return [
+          planeAt([1, 0, 0], [min[0], 0, 0]),
+          planeAt([-1, 0, 0], [max[0], 0, 0]),
+          planeAt([0, 1, 0], [0, min[1], 0]),
+          planeAt([0, -1, 0], [0, max[1], 0]),
+          planeAt([0, 0, 1], [0, 0, min[2]]),
+          planeAt([0, 0, -1], [0, 0, max[2]]),
+        ];
+      }
+      return [];
+    };
+
+    const setCameraControls = (useOrthographic) => {
+      const p = orbitControlsRef.perspective;
+      const o = orbitControlsRef.ortho;
+      if (p) {
+        p.orbit.enabled = !useOrthographic;
+        p.translate.enabled = !useOrthographic && workPlaneVisibleRef.current;
+        p.rotate.enabled = !useOrthographic && workPlaneVisibleRef.current;
+      }
+      if (o) {
+        o.orbit.enabled = useOrthographic;
+        o.orbit.enableRotate = false;
+        o.translate.enabled = useOrthographic && workPlaneVisibleRef.current;
+        o.rotate.enabled = useOrthographic && workPlaneVisibleRef.current;
+      }
+      orbitControlsRef.current = useOrthographic ? o?.orbit : p?.orbit;
+      transformControlsRef.current = useOrthographic
+        ? { translate: o?.translate, rotate: o?.rotate }
+        : { translate: p?.translate, rotate: p?.rotate };
+    };
+
+    const updateOrthoFrustum = (size) => {
+      const width = Math.max(1, container.clientWidth);
+      const height = Math.max(1, container.clientHeight);
+      const nextAspect = width / height;
+      const safeSize = Math.max(1, Number(size) || 10);
+      orthoCamera.left = -safeSize * nextAspect / 2;
+      orthoCamera.right = safeSize * nextAspect / 2;
+      orthoCamera.top = safeSize / 2;
+      orthoCamera.bottom = -safeSize / 2;
+      orthoCamera.updateProjectionMatrix();
+    };
+
+    const applySavedCamera = (targetCamera, controls, saved) => {
+      if (!saved) return false;
+      if (Array.isArray(saved.position)) targetCamera.position.fromArray(saved.position);
+      if (Array.isArray(saved.up)) targetCamera.up.fromArray(saved.up);
+      if (Number.isFinite(Number(saved.zoom)) && targetCamera.isOrthographicCamera) {
+        targetCamera.zoom = Math.max(0.01, Number(saved.zoom));
+      }
+      if (Array.isArray(saved.target)) controls.target.fromArray(saved.target);
+      targetCamera.updateProjectionMatrix();
+      targetCamera.lookAt(controls.target);
+      controls.update();
+      return true;
+    };
+
+    const configureCameraForView = (view, forceFit = false) => {
+      const box = getModelBounds();
+      const center = box.getCenter(new THREE.Vector3());
+      const size = box.getSize(new THREE.Vector3());
+      const span = Math.max(size.x, size.y, size.z, 10);
+      const isOrtho = view.type !== "3d" || view.projection === "orthographic";
+      camera = isOrtho ? orthoCamera : perspectiveCamera;
+      cameraRef.current = camera;
+      setCameraControls(isOrtho);
+      const controls = orbitControlsRef.current;
+
+      if (!forceFit && applySavedCamera(camera, controls, view.camera)) return;
+
+      if (!isOrtho) {
+        camera.up.set(0, 0, 1);
+        camera.position.copy(center).add(new THREE.Vector3(span, -span, span * 0.8));
+        controls.target.copy(center);
+        camera.lookAt(center);
+      } else if (view.type === "plan") {
+        const elevation = Number(view._levelElevation ?? center.z);
+        updateOrthoFrustum(Math.max(size.x, size.y, 10) * 1.25);
+        camera.up.set(0, 1, 0);
+        camera.position.set(center.x, center.y, Math.max(box.max.z, elevation) + span * 2);
+        controls.target.set(center.x, center.y, elevation);
+        camera.lookAt(controls.target);
+      } else {
+        const direction = new THREE.Vector3(...(view.direction ?? [1, 0, 0])).normalize();
+        const up = new THREE.Vector3(...(view.up ?? [0, 0, 1])).normalize();
+        const target = view.type === "section" && Array.isArray(view.origin)
+          ? new THREE.Vector3(...view.origin)
+          : center;
+        const cropWidth = Number(view.cropBox?.width);
+        const cropHeight = Number(view.cropBox?.height);
+        const viewportAspect = Math.max(0.01, container.clientWidth / Math.max(1, container.clientHeight));
+        const cropFrustum = Number.isFinite(cropWidth) && Number.isFinite(cropHeight)
+          ? Math.max(cropHeight, cropWidth / viewportAspect, 1)
+          : Math.max(size.z, size.x, size.y, 10) * 1.25;
+        updateOrthoFrustum(cropFrustum);
+        camera.up.copy(up);
+        camera.position.copy(target).addScaledVector(direction, -span * 2);
+        controls.target.copy(target);
+        camera.lookAt(target);
+      }
+      camera.updateProjectionMatrix();
+      controls.update();
+    };
+
+    const getActiveViewState = () => {
+      const controls = orbitControlsRef.current;
+      if (!camera || !controls) return null;
+      return {
+        viewId: activeView?.id ?? null,
+        camera: {
+          position: camera.position.toArray(),
+          target: controls.target.toArray(),
+          up: camera.up.toArray(),
+          zoom: camera.isOrthographicCamera ? camera.zoom : 1,
+        },
+      };
+    };
+    getActiveViewStateRef.current = getActiveViewState;
+
+    const applyView = (nextView, forceFit = false) => {
+      if (!nextView) return false;
+      activeView = { ...nextView };
+      configureCameraForView(activeView, forceFit);
+      applyClippingPlanes(clippingForView(activeView));
+      applyVisibility(activeView.visibility ?? {});
+      if (activeView.type === "plan" && Number.isFinite(Number(activeView._levelElevation))) {
+        pivot.position.z = Number(activeView._levelElevation);
+        pivot.rotation.set(Math.PI / 2, 0, 0);
+        onCenterChange?.({ x: pivot.position.x, y: pivot.position.y, z: pivot.position.z });
+      }
+      return true;
+    };
+    applyViewRef.current = applyView;
+    fitViewRef.current = () => applyView(activeView, true);
+
+    setActiveLevelRef.current = (level) => {
+      if (!level) return false;
+      const elevation = Number(level.elevation ?? 0);
+      pivot.position.z = elevation;
+      pivot.rotation.set(Math.PI / 2, 0, 0);
+      onCenterChange?.({ x: pivot.position.x, y: pivot.position.y, z: elevation });
+      return true;
+    };
+
+    const switchToView = (view) => {
+      if (typeof view === "string") {
+        return applyView(
+          view === "plan"
+            ? { id: "legacy-plan", name: "Planta", type: "plan", _levelElevation: pivot.position.z, viewRange: { topOffset: 2.3, depthOffset: -0.5 } }
+            : { id: "legacy-3d", name: "Vista 3D", type: "3d" },
+        );
+      }
+      return applyView(view);
+    };
     switchViewRef.current = switchToView;
 
     const findEndpointSnapTarget = (
@@ -1068,18 +1292,24 @@ const ThreeCanvas = forwardRef(function ThreeCanvas(
     window.addEventListener("dblclick",    onDblClick);
     window.addEventListener("keydown",     onKeyDown);
 
-    window.addEventListener("resize", () => {
-      const w = container.clientWidth;
-      const h = container.clientHeight;
-      camera.aspect = w / h;
-      camera.updateProjectionMatrix();
-      renderer.setSize(w, h);
-      labelRenderer.setSize(w, h);
-    });
+    const onResize = () => {
+      const width = Math.max(1, container.clientWidth);
+      const height = Math.max(1, container.clientHeight);
+      perspectiveCamera.aspect = width / height;
+      perspectiveCamera.updateProjectionMatrix();
+      const orthoHeight = Math.max(1, orthoCamera.top - orthoCamera.bottom);
+      const nextAspect = width / height;
+      orthoCamera.left = -orthoHeight * nextAspect / 2;
+      orthoCamera.right = orthoHeight * nextAspect / 2;
+      orthoCamera.updateProjectionMatrix();
+      renderer.setSize(width, height);
+      labelRenderer.setSize(width, height);
+    };
+    window.addEventListener("resize", onResize);
 
     // ── Loop de animação ─────────────────────────────────────────────────────
     const animate = () => {
-      orbitControls.update();
+      orbitControlsRef.current?.update?.();
       renderer.render(scene, camera);
       labelRenderer.render(scene, camera);
       requestAnimationFrame(animate);
@@ -1094,6 +1324,7 @@ const ThreeCanvas = forwardRef(function ThreeCanvas(
       window.removeEventListener("pointerup",   onPointerUp);
       window.removeEventListener("dblclick",    onDblClick);
       window.removeEventListener("keydown",     onKeyDown);
+      window.removeEventListener("resize", onResize);
 
       cameraRef.current = null;
       orbitControlsRef.current = null;
@@ -1103,6 +1334,9 @@ const ThreeCanvas = forwardRef(function ThreeCanvas(
       translateControls.dispose();
       rotateControls.dispose();
       orbitControls.dispose();
+      orthoTranslateControls.dispose();
+      orthoRotateControls.dispose();
+      orthoOrbitControls.dispose();
       renderer.dispose();
 
       scene.traverse((o) => {

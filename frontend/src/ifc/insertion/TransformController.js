@@ -9,8 +9,9 @@ import * as THREE from "three";
 import { TransformControls } from "three/examples/jsm/controls/TransformControls.js";
 
 export class TransformController {
-  constructor({ camera, dom, scene, orbit, getManager, onCommit }) {
+  constructor({ camera, dom, scene, orbit, getOrbit, getManager, onCommit }) {
     this.scene = scene;
+    this.getOrbit = getOrbit ?? (() => orbit);
     this._dragStart = null;
     this._activeKind = null;
 
@@ -27,9 +28,9 @@ export class TransformController {
     scene.add(this.rotate.getHelper());
 
     this._onTranslateDraggingChanged = (e) =>
-      this._handleDraggingChanged("translate", e, orbit, onCommit);
+      this._handleDraggingChanged("translate", e, onCommit);
     this._onRotateDraggingChanged = (e) =>
-      this._handleDraggingChanged("rotate", e, orbit, onCommit);
+      this._handleDraggingChanged("rotate", e, onCommit);
     this.translate.addEventListener(
       "dragging-changed",
       this._onTranslateDraggingChanged
@@ -53,6 +54,12 @@ export class TransformController {
   setMode() {
     this.translate.setSpace("local");
     this.rotate.setSpace("local");
+  }
+
+  setCamera(camera) {
+    if (!camera) return;
+    this.translate.camera = camera;
+    this.rotate.camera = camera;
   }
 
   setTranslationSnap(value) {
@@ -106,14 +113,15 @@ export class TransformController {
     this.rotate.dispose();
   }
 
-  _handleDraggingChanged(kind, e, orbit, onCommit) {
+  _handleDraggingChanged(kind, e, onCommit) {
+    const orbit = this.getOrbit?.();
     const active = kind === "translate" ? this.translate : this.rotate;
     const other = kind === "translate" ? this.rotate : this.translate;
     const mesh = active.object;
     if (!mesh) return;
 
     if (e.value) {
-      orbit.enabled = false;
+      if (orbit) orbit.enabled = false;
       other.enabled = false;
       this._activeKind = kind;
       this._dragStart = {
@@ -123,7 +131,7 @@ export class TransformController {
       return;
     }
 
-    orbit.enabled = true;
+    if (orbit) orbit.enabled = true;
     other.enabled = Boolean(active.object);
 
     const start = this._dragStart;

@@ -1,1 +1,2 @@
-export { default as ViewManager, ViewType } from '../bim/ViewManager';
+export * from "./viewModel.js";
+export * from "./viewStorage.js";

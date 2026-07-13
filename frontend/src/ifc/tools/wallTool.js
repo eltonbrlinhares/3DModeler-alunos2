@@ -57,6 +57,9 @@ function finishWall(ctx) {
       position: [origin.x, origin.y, origin.z],
       rotation_z,
       storey_guid: ctx.level.guid,
+      top_level_guid: ctx.snapLevelGuid ?? null,
+      base_offset: 0,
+      top_offset: 0,
     },
     "Parede"
   );
