@@ -85,6 +85,13 @@ export const ifcApi = {
   resyncConnections: (id, guid) =>
     req("POST", `/ifc/models/${id}/connectivity/${guid}/resync`),
 
+  // ---------- cotas manuais ponto-a-ponto (IfcAnnotation) ----------
+  listDimensions: (id) => req("GET", `/ifc/models/${id}/dimensions`),
+  createDimension: (id, p0, p1, plane) =>
+    req("POST", `/ifc/models/${id}/dimensions`, { p0, p1, plane }),
+  deleteDimension: (id, guid) => req("DELETE", `/ifc/models/${id}/dimensions/${guid}`),
+
+
   // ---------- dimensionamento preliminar (fundação) ----------
   // stateless: sem model_id, so calcula uma sugestao de geometria
   suggestPadFooting: (params) =>

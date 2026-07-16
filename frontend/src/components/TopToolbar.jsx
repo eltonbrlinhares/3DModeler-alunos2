@@ -17,6 +17,7 @@ const TOOLS = [
   { id: "footing", label: "FUND", title: "Fundação (sapata/bloco) — clique interseções de grid em planta para marcar cada fundação" },
   { id: "slab", label: "LAJE", title: "Laje/Radier — desenhe o contorno em planta (clique as interseções; 2×clique/Enter/clique no 1º ponto para fechar)" },
   { id: "dimension", label: "COTA", title: "Cota — clique sobre uma parede para medi-la; clique no valor para editar" },
+  { id: "measure", label: "MEDIR", title: "Medir — clique em dois pontos quaisquer do modelo para criar uma cota livre (gravada no IFC como anotação)" },
 ];
 
 // ferramentas cujo tamanho vertical não é definido pelo desenho em planta

@@ -1,7 +1,7 @@
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
-from app.api import connectivity, design, edit, geometry, grids, history, levels, mesh, models, spatial
+from app.api import connectivity, design, dimensions, edit, geometry, grids, history, levels, mesh, models, spatial, view_annotations
 
 app = FastAPI(title="3DModeler.js IFC Backend")
 
@@ -24,6 +24,8 @@ app.include_router(history.router)
 app.include_router(mesh.router)
 app.include_router(design.router)
 app.include_router(connectivity.router)
+app.include_router(dimensions.router)
+app.include_router(view_annotations.router)
 
 
 @app.get("/health")

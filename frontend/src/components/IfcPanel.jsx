@@ -18,7 +18,9 @@ import * as THREE from "three";
 import ifcApi from "../services/ifcApi.js";
 import { IfcSceneManager } from "../ifc/IfcSceneManager.js";
 import { IfcDatumManager } from "../ifc/IfcDatumManager.js";
+import { DimensionManager } from "../ifc/DimensionManager.js";
 import { InsertionController } from "../ifc/insertion/InsertionController.js";
+import { snapPointOnGridLevel } from "../ifc/insertion/snapping.js";
 import { SelectionController } from "../ifc/insertion/SelectionController.js";
 import { TransformController } from "../ifc/insertion/TransformController.js";
 import { INSERTION_TOOLS } from "../ifc/tools/index.js";
@@ -85,6 +87,9 @@ export default function IfcPanel({
   const [modelId, setModelId] = useState(null);
   const [summary, setSummary] = useState(null);
   const [elements, setElements] = useState([]);
+  const [dimensionsList, setDimensionsList] = useState([]);
+  const dimensionsListRef = useRef([]);
+  const [selectedDimension, setSelectedDimension] = useState(null); // { guid, length } | null
   const [selected, setSelected] = useState(null); // { guid, type, name }
   const [detail, setDetail] = useState(null);
   const [connections, setConnections] = useState([]);
@@ -171,6 +176,8 @@ export default function IfcPanel({
 
   const mgrRef = useRef(null);
   const datumRef = useRef(null);
+  const dimsRef = useRef(null);
+  const measurePendingRef = useRef(null); // THREE.Vector3 do 1º ponto clicado (ferramenta "Medir"), ou null
   const transformRef = useRef(null);
   const selectionRef = useRef(null);
   const sceneRef = useRef(null);
@@ -186,6 +193,7 @@ export default function IfcPanel({
   const dimensionRef = useRef(null);
   const modelIdRef = useRef(null);
   const selectedRef = useRef(null);
+  const selectedDimensionRef = useRef(null);
   const formRef = useRef(form);
   const elementsRef = useRef(elements);
   const levelsRef = useRef(levels);
@@ -198,6 +206,8 @@ export default function IfcPanel({
   const sketchToolRef = useRef(sketchTool);
   modelIdRef.current = modelId;
   selectedRef.current = selected;
+  selectedDimensionRef.current = selectedDimension;
+  dimensionsListRef.current = dimensionsList;
   formRef.current = form;
   elementsRef.current = elements;
   levelsRef.current = levels;
@@ -274,6 +284,9 @@ export default function IfcPanel({
 
     const datum = new IfcDatumManager(scene, camera, dom);
     datumRef.current = datum;
+
+    const dims = new DimensionManager(scene);
+    dimsRef.current = dims;
 
     // gizmo de mover/girar
     const transform = new TransformController({
@@ -409,11 +422,73 @@ export default function IfcPanel({
       onPick: (guid) => selectGuid(guid),
       isInserting: () => insertion.active || Boolean(sketchToolRef.current),
       isTransforming: () => transform.dragging,
+      isCotaActive: () => sketchToolRef.current === "measure",
+      getDimensionManager: () => dimsRef.current,
+      onPickDimension: (guid) => selectDimension(guid),
     });
     selection.attach();
     selectionRef.current = selection;
 
+    // ferramenta "Medir": clique em dois pontos quaisquer (raycast contra a
+    // malha real dos elementos) para criar uma cota livre — diferente da
+    // ferramenta "Cota" (mede/edita parede). Não usa um Controller próprio
+    // porque é só 2 cliques + preview, sem estado de cadeia/sketch.
+    const measureRay = new THREE.Raycaster();
+    const measureNdc = new THREE.Vector2();
+    const measurePoint = (ev) => {
+      const cam = canvasRef.current?.getCamera?.() ?? cameraRef.current ?? camera;
+      if (!cam) return null;
+      const rect = dom.getBoundingClientRect();
+      measureNdc.x = ((ev.clientX - rect.left) / rect.width) * 2 - 1;
+      measureNdc.y = -((ev.clientY - rect.top) / rect.height) * 2 + 1;
+      measureRay.setFromCamera(measureNdc, cam);
+      const hit = mgrRef.current?.pickPoint?.(measureRay);
+      if (hit) return hit;
+      // Raycast na malha exige acertar o elemento em cima — fácil numa
+      // parede (linha comprida), difícil num pilar (seção pequena, ex.
+      // 0,3m) visto de longe em planta. Reforço: encaixa na interseção de
+      // grid mais próxima do clique, mesmo padrão que as outras
+      // ferramentas de inserção já usam.
+      const snap = snapPointOnGridLevel(ev, activeInsertionLevel(), {
+        camera: cam, dom, grids: gridsRef.current, datumPoints: datumRef.current?.allPoints?.(),
+      });
+      return snap ? { guid: null, point: snap.point } : null;
+    };
+    const onMeasureDown = (ev) => {
+      if (sketchToolRef.current !== "measure") return;
+      const hit = measurePoint(ev);
+      if (!hit) {
+        setStatus("Medir: clique sobre um elemento do modelo.");
+        return;
+      }
+      ev.preventDefault?.();
+      ev.stopPropagation?.();
+      if (!measurePendingRef.current) {
+        measurePendingRef.current = hit.point.clone();
+        setStatus("Medir: clique no segundo ponto.");
+      } else {
+        const p0 = measurePendingRef.current;
+        const p1 = hit.point.clone();
+        measurePendingRef.current = null;
+        dimsRef.current?.clearPreview();
+        createMeasureDimension(p0, p1);
+      }
+    };
+    const onMeasureMove = (ev) => {
+      if (sketchToolRef.current !== "measure" || !measurePendingRef.current) return;
+      const hit = measurePoint(ev);
+      if (!hit) return;
+      const p0 = measurePendingRef.current;
+      const len = p0.distanceTo(hit.point);
+      dimsRef.current?.setPreview(p0, hit.point, len.toFixed(2));
+    };
+    dom.addEventListener("pointerdown", onMeasureDown);
+    dom.addEventListener("pointermove", onMeasureMove);
+
     return () => {
+      dom.removeEventListener("pointerdown", onMeasureDown);
+      dom.removeEventListener("pointermove", onMeasureMove);
+      dims.dispose();
       selection.dispose();
       insertion.dispose();
       dimension.dispose();
@@ -429,6 +504,7 @@ export default function IfcPanel({
       if (domRef.current) domRef.current.style.cursor = "";
       mgrRef.current = null;
       datumRef.current = null;
+      dimsRef.current = null;
       transformRef.current = null;
       selectionRef.current = null;
       insertionRef.current = null;
@@ -457,6 +533,13 @@ export default function IfcPanel({
     slabSketchRef.current?.setActive(sketchTool === "slab", level);
     dimensionRef.current?.setActive(sketchTool === "dimension");
     canvasRef.current?.setActiveLevel?.(level);
+    if (sketchTool !== "measure") {
+      measurePendingRef.current = null;
+      dimsRef.current?.clearPreview();
+    }
+    if (domRef.current) {
+      domRef.current.style.cursor = sketchTool === "measure" ? "crosshair" : domRef.current.style.cursor;
+    }
   }, [sketchTool, activeLevelGuid, canvasRef]);
 
   useEffect(() => {
@@ -772,6 +855,40 @@ export default function IfcPanel({
   }, [activeViewId, views, levels, workPlaneControls, canvasRef]);
 
   // ── dados ────────────────────────────────────────────────────────────────
+  // carrega as cotas manuais ponto-a-ponto e desenha via DimensionManager —
+  // chamada de dentro de `refreshMesh` (que já roda depois de toda
+  // criação/edição/undo/redo), então nunca precisa de um ponto de chamada
+  // próprio espalhado pelo código.
+  const refreshDimensions = useCallback(async (id) => {
+    const { dimensions: list } = await ifcApi.listDimensions(id);
+    setDimensionsList(list);
+    const dims = dimsRef.current;
+    if (!dims) return;
+    const seen = new Set();
+    for (const d of list) {
+      seen.add(d.guid);
+      dims.set(
+        d.guid,
+        new THREE.Vector3(...d.p0),
+        new THREE.Vector3(...d.p1),
+        `${d.length.toFixed(2)}`
+      );
+    }
+    for (const guid of [...dims.items.keys()]) {
+      if (!seen.has(guid)) dims.remove(guid);
+    }
+  }, []);
+
+  // determina o "plane" a mandar pro backend a partir da vista ativa (planta
+  // -> "z"; elevação/corte -> eixo dominante da direção de visada) — só
+  // afeta a orientação da marca de extremidade da cota, ver dimension_service.py
+  const planeForActiveView = useCallback(() => {
+    const view = viewsRef.current.find((v) => v.id === activeViewIdRef.current);
+    if (!view || view.type === "plan" || view.type === "3d") return "z";
+    const d = view.direction || [0, 1, 0];
+    return Math.abs(d[0]) >= Math.abs(d[1]) ? "x" : "y";
+  }, []);
+
   const refreshMesh = useCallback(async (id) => {
     const bbox = mgrRef.current?.loadModel(await ifcApi.mesh(id));
     datumRef.current?.setBBox(bbox); // dimensiona os planos de nível
@@ -783,7 +900,69 @@ export default function IfcPanel({
         ...(level ? { _levelElevation: Number(level.elevation ?? 0) } : {}),
       });
     }
-  }, [canvasRef]);
+    await refreshDimensions(id);
+  }, [canvasRef, refreshDimensions]);
+
+  const createMeasureDimension = useCallback(
+    async (p0, p1) => {
+      const id = modelIdRef.current;
+      if (!id) return;
+      try {
+        setBusy(true);
+        const plane = planeForActiveView();
+        const { guid, length } = await ifcApi.createDimension(
+          id, [p0.x, p0.y, p0.z], [p1.x, p1.y, p1.z], plane
+        );
+        dimsRef.current?.set(guid, p0, p1, length.toFixed(2));
+        setDimensionsList((list) => [
+          ...list,
+          { guid, p0: [p0.x, p0.y, p0.z], p1: [p1.x, p1.y, p1.z], plane, length },
+        ]);
+        setStatus(`Cota criada: ${length.toFixed(2)} m.`);
+        setBusy(false);
+        pushHistory(1);
+      } catch (e) {
+        fail(e);
+      }
+    },
+    [planeForActiveView]
+  );
+
+  const deleteMeasureDimension = useCallback(async (guid) => {
+    const id = modelIdRef.current;
+    if (!id) return;
+    try {
+      setBusy(true);
+      await ifcApi.deleteDimension(id, guid);
+      dimsRef.current?.remove(guid);
+      setDimensionsList((list) => list.filter((d) => d.guid !== guid));
+      if (selectedDimensionRef.current?.guid === guid) setSelectedDimension(null);
+      setStatus("Cota apagada.");
+      setBusy(false);
+      pushHistory(1);
+    } catch (e) {
+      fail(e);
+    }
+  }, []);
+
+  // seleciona uma cota por clique (ver SelectionController.onPickDimension) —
+  // mutuamente exclusivo com a seleção normal de elemento.
+  const selectDimension = useCallback((guid) => {
+    if (!guid) {
+      dimsRef.current?.setSelected(null);
+      setSelectedDimension(null);
+      return;
+    }
+    mgrRef.current?.setSelected(null);
+    transformRef.current?.detach();
+    setSelected(null);
+    setDetail(null);
+    setConnections([]);
+    dimsRef.current?.setSelected(guid);
+    const found = dimensionsListRef.current.find((d) => d.guid === guid);
+    setSelectedDimension({ guid, length: found?.length ?? null });
+    setStatus(found ? `Cota selecionada: ${found.length.toFixed(2)} m. Delete para apagar.` : "Cota selecionada.");
+  }, []);
 
   // carrega níveis + grids e os desenha na camada de datums
   const refreshDatums = useCallback(async (id) => {
@@ -853,6 +1032,10 @@ export default function IfcPanel({
   const selectGuid = useCallback(async (guid) => {
     const mgr = mgrRef.current;
     mgr?.setSelected(guid);
+    if (selectedDimensionRef.current) {
+      dimsRef.current?.setSelected(null);
+      setSelectedDimension(null);
+    }
     if (!guid) {
       setSelected(null);
       setDetail(null);
@@ -1965,15 +2148,12 @@ export default function IfcPanel({
     setStatus(`Corte “${section.name}” criado.`);
   };
 
-  // tecla Delete remove o selecionado
+  // tecla Delete remove o selecionado (elemento ou cota)
   useEffect(() => {
     const onKey = (e) => {
-      if (
-        e.key === "Delete" &&
-        selectedRef.current &&
-        e.target.tagName !== "INPUT"
-      )
-        remove();
+      if (e.key !== "Delete" || e.target.tagName === "INPUT") return;
+      if (selectedDimensionRef.current) deleteMeasureDimension(selectedDimensionRef.current.guid);
+      else if (selectedRef.current) remove();
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
@@ -2021,6 +2201,44 @@ export default function IfcPanel({
         canUndo={historyRef.current.past.length > 0}
         canRedo={historyRef.current.future.length > 0}
       />
+      {dimensionsList.length > 0 && (
+        <div
+          style={{
+            position: "fixed", top: 56, right: 12, zIndex: 20,
+            background: "rgba(28,25,23,0.92)", color: "#fde68a",
+            font: "12px monospace", padding: "8px 10px", borderRadius: 6,
+            maxHeight: 220, overflowY: "auto", minWidth: 140,
+          }}
+        >
+          <strong style={{ display: "block", marginBottom: 4 }}>Cotas ({dimensionsList.length})</strong>
+          {dimensionsList.map((d) => (
+            <div
+              key={d.guid}
+              onClick={() => selectDimension(d.guid)}
+              style={{
+                display: "flex", justifyContent: "space-between", gap: 8, padding: "2px 4px",
+                cursor: "pointer", borderRadius: 3,
+                background: selectedDimension?.guid === d.guid ? "rgba(239,68,68,0.35)" : "transparent",
+              }}
+            >
+              <span>{d.length.toFixed(2)} m</span>
+              <button
+                onClick={(ev) => {
+                  ev.stopPropagation();
+                  deleteMeasureDimension(d.guid);
+                }}
+                title="Apagar cota"
+                style={{
+                  background: "none", border: "none", color: "#fca5a5",
+                  cursor: "pointer", font: "12px monospace", padding: 0,
+                }}
+              >
+                ×
+              </button>
+            </div>
+          ))}
+        </div>
+      )}
       <ProjectBrowser
         levels={levels}
         views={views}
