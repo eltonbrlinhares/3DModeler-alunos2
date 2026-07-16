@@ -102,6 +102,15 @@ export class IfcSceneManager {
     return hits.length ? hits[0].object.userData.ifc.guid : null;
   }
 
+  /** Como `pick`, mas também devolve o ponto 3D exato da interseção (mundo)
+   * — usado pela ferramenta de cota manual ponto-a-ponto. */
+  pickPoint(raycaster) {
+    const meshes = [...this.items.values()].map((i) => i.mesh);
+    const hits = raycaster.intersectObjects(meshes, false);
+    if (!hits.length) return null;
+    return { guid: hits[0].object.userData.ifc.guid, point: hits[0].point };
+  }
+
   /** Destaca o produto `guid` (ou limpa o destaque se null). */
   setSelected(guid) {
     // restaura cor do anterior
