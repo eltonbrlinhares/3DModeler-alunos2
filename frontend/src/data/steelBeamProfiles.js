@@ -1,9 +1,8 @@
 /**
  * src/data/steelBeamProfiles.js
  *
- * Catálogo de perfis metálicos para vigas, gerado a partir das tabelas de
- * fabricante (Gerdau HP/W, ArcelorMittal CVS/VS - ver os .txt originais do
- * projeto). Dimensões convertidas de mm para m.
+ * Catálogo de perfis metálicos para vigas: séries laminadas (HP/W) e
+ * soldadas (CVS/VS). Dimensões convertidas de mm para m.
  *
  * Cada perfil: { value, b (m), h (m), tf (m), tw (m), weight (kgf/m) }
  *   b  = Largura (mesa)      -> mapeado para form.width
@@ -18,7 +17,7 @@
 
 export const STEEL_BEAM_FAMILIES = {
   "HP": {
-    "label": "HP (Gerdau laminado)",
+    "label": "HP (perfil laminado)",
     "shape": "I",
     "profiles": [
       {
@@ -88,7 +87,7 @@ export const STEEL_BEAM_FAMILIES = {
     ]
   },
   "W": {
-    "label": "W (Gerdau laminado)",
+    "label": "W (perfil laminado)",
     "shape": "I",
     "profiles": [
       {
@@ -894,7 +893,7 @@ export const STEEL_BEAM_FAMILIES = {
     ]
   },
   "CVS": {
-    "label": "CVS (ArcelorMittal soldado, simétrico)",
+    "label": "CVS (perfil soldado, simétrico)",
     "shape": "I",
     "profiles": [
       {
@@ -1076,7 +1075,7 @@ export const STEEL_BEAM_FAMILIES = {
     ]
   },
   "VS": {
-    "label": "VS (ArcelorMittal soldado, viga)",
+    "label": "VS (perfil soldado, viga)",
     "shape": "I",
     "profiles": [
       {

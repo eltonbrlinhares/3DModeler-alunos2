@@ -612,3 +612,240 @@ def test_level_constrained_wall_and_column_follow_elevations():
         bbox = client.get(f"/ifc/models/{mid}/mesh/{guid}").json()["bbox"]
         assert abs(bbox["min"][2] - 1.0) < 1e-5
         assert abs(bbox["max"][2] - 4.0) < 1e-5
+
+
+def test_face_fit_top_referenced_beam_between_columns():
+    """Viga desenhada pelo topo deve parar nas faces, não nos eixos."""
+    mid = _new_model("face-fit-columns")
+    columns = []
+    for x in (0.0, 4.0):
+        columns.append(
+            client.post(
+                f"/ifc/models/{mid}/geometry/column",
+                json={
+                    "name": f"C-{x}",
+                    "width": 0.30,
+                    "depth": 0.30,
+                    "height": 3.0,
+                    "position": [x, 0.0, 0.0],
+                },
+            ).json()["guid"]
+        )
+    beam = client.post(
+        f"/ifc/models/{mid}/geometry/beam",
+        json={
+            "name": "B-face",
+            "width": 0.20,
+            "depth": 0.30,
+            "length": 4.0,
+            "position": [0.0, 0.0, 2.85],
+        },
+    ).json()["guid"]
+
+    bbox = client.get(f"/ifc/models/{mid}/mesh/{beam}").json()["bbox"]
+    assert abs(bbox["min"][0] - 0.15) < 1e-6
+    assert abs(bbox["max"][0] - 3.85) < 1e-6
+
+    connections = client.get(
+        f"/ifc/models/{mid}/connectivity/{beam}"
+    ).json()["connections"]
+    assert {c["guid"] for c in connections} == set(columns)
+    assert all(c["role"] == "supported_by" for c in connections)
+
+
+def test_face_fit_uses_real_steel_profile_envelope():
+    """O recorte deve usar b/h do perfil metálico, não os defaults 0,4×0,4."""
+    mid = _new_model("face-fit-steel")
+    client.post(
+        f"/ifc/models/{mid}/geometry/column",
+        json={
+            "name": "W200",
+            "profile": "W200x15",
+            "shape": "H",
+            "h": 0.203,
+            "b": 0.102,
+            "tw": 0.0058,
+            "tf": 0.0084,
+            "height": 3.0,
+            "position": [0.0, 0.0, 0.0],
+        },
+    )
+    beam = client.post(
+        f"/ifc/models/{mid}/geometry/beam",
+        json={
+            "name": "B",
+            "width": 0.20,
+            "depth": 0.30,
+            "length": 4.0,
+            "position": [0.0, 0.0, 2.85],
+        },
+    ).json()["guid"]
+    bbox = client.get(f"/ifc/models/{mid}/mesh/{beam}").json()["bbox"]
+    assert abs(bbox["min"][0] - 0.051) < 1e-5
+
+
+def test_face_fit_rotated_column_uses_oblique_face_plane():
+    """Pilar girado deve gerar corte na própria face inclinada."""
+    import math
+
+    mid = _new_model("face-fit-rotated")
+    client.post(
+        f"/ifc/models/{mid}/geometry/column",
+        json={
+            "name": "C45",
+            "width": 0.40,
+            "depth": 0.20,
+            "height": 3.0,
+            "position": [0.0, 0.0, 0.0],
+            "rotation_z": math.pi / 4.0,
+        },
+    )
+    beam = client.post(
+        f"/ifc/models/{mid}/geometry/beam",
+        json={
+            "name": "B",
+            "width": 0.10,
+            "depth": 0.30,
+            "length": 4.0,
+            "position": [0.0, 0.0, 2.85],
+        },
+    ).json()["guid"]
+    product = client.get(f"/ifc/models/{mid}/mesh/{beam}").json()["products"][0]
+    vertices = product["vertices"]
+    start_vertices = [
+        vertices[i : i + 3]
+        for i in range(0, len(vertices), 3)
+        if vertices[i] < 0.5
+    ]
+    assert len(start_vertices) == 4
+    c = math.cos(math.pi / 4.0)
+    s = math.sin(math.pi / 4.0)
+    for x, y, _ in start_vertices:
+        v = -s * x + c * y
+        assert abs(v + 0.10) < 1e-6
+
+
+def test_face_fit_t_junction_with_different_beam_depths():
+    """Vigas alinhadas pelo topo conectam mesmo com eixos em cotas distintas."""
+    import math
+
+    mid = _new_model("face-fit-t")
+    main = client.post(
+        f"/ifc/models/{mid}/geometry/beam",
+        json={
+            "name": "Principal",
+            "width": 0.30,
+            "depth": 0.50,
+            "length": 4.0,
+            "position": [0.0, 0.0, 2.75],
+        },
+    ).json()["guid"]
+    secondary = client.post(
+        f"/ifc/models/{mid}/geometry/beam",
+        json={
+            "name": "Secundária",
+            "width": 0.20,
+            "depth": 0.30,
+            "length": 2.0,
+            "position": [2.0, 0.0, 2.85],
+            "rotation_z": math.pi / 2.0,
+        },
+    ).json()["guid"]
+
+    main_bbox = client.get(f"/ifc/models/{mid}/mesh/{main}").json()["bbox"]
+    secondary_bbox = client.get(
+        f"/ifc/models/{mid}/mesh/{secondary}"
+    ).json()["bbox"]
+    assert abs(main_bbox["min"][0] - 0.0) < 1e-6
+    assert abs(main_bbox["max"][0] - 4.0) < 1e-6
+    assert abs(secondary_bbox["min"][1] - 0.15) < 1e-6
+
+    connections = client.get(
+        f"/ifc/models/{mid}/connectivity/{secondary}"
+    ).json()["connections"]
+    assert len(connections) == 1
+    assert connections[0]["guid"] == main
+    assert connections[0]["role"] == "crosses"
+
+
+def test_face_fit_right_angle_beams_share_corner_without_gap_even_on_column():
+    """Num canto 90° com pilar no nó, as duas vigas não devem ficar separadas."""
+    import math
+
+    mid = _new_model("face-fit-corner")
+    client.post(
+        f"/ifc/models/{mid}/geometry/column",
+        json={
+            "name": "Canto",
+            "width": 0.30,
+            "depth": 0.30,
+            "height": 3.0,
+            "position": [0.0, 0.0, 0.0],
+        },
+    )
+    beam_x = client.post(
+        f"/ifc/models/{mid}/geometry/beam",
+        json={
+            "name": "VX",
+            "width": 0.20,
+            "depth": 0.30,
+            "length": 2.0,
+            "position": [0.0, 0.0, 2.85],
+        },
+    ).json()["guid"]
+    beam_y = client.post(
+        f"/ifc/models/{mid}/geometry/beam",
+        json={
+            "name": "VY",
+            "width": 0.20,
+            "depth": 0.30,
+            "length": 2.0,
+            "position": [0.0, 0.0, 2.85],
+            "rotation_z": math.pi / 2.0,
+        },
+    ).json()["guid"]
+
+    bbox_x = client.get(f"/ifc/models/{mid}/mesh/{beam_x}").json()["bbox"]
+    bbox_y = client.get(f"/ifc/models/{mid}/mesh/{beam_y}").json()["bbox"]
+
+    # Sem a priorização do encontro viga↔viga, o recorte parava em 0,15 m
+    # (face do pilar). O ajuste correto encosta as vigas pelo menos na face da
+    # outra viga: 0,10 m para largura 0,20 m.
+    assert abs(bbox_x["min"][0] - 0.10) < 1e-6
+    assert abs(bbox_y["min"][1] - 0.10) < 1e-6
+
+
+def test_deleting_support_restores_previous_beam_cut():
+    """Ao apagar o receptor, a viga restante volta ao comprimento lógico."""
+    import math
+
+    mid = _new_model("face-fit-delete")
+    main = client.post(
+        f"/ifc/models/{mid}/geometry/beam",
+        json={
+            "name": "Principal",
+            "width": 0.30,
+            "depth": 0.50,
+            "length": 4.0,
+            "position": [0.0, 0.0, 2.75],
+        },
+    ).json()["guid"]
+    secondary = client.post(
+        f"/ifc/models/{mid}/geometry/beam",
+        json={
+            "name": "Secundária",
+            "width": 0.20,
+            "depth": 0.30,
+            "length": 2.0,
+            "position": [2.0, 0.0, 2.85],
+            "rotation_z": math.pi / 2.0,
+        },
+    ).json()["guid"]
+    before = client.get(f"/ifc/models/{mid}/mesh/{secondary}").json()["bbox"]
+    assert abs(before["min"][1] - 0.15) < 1e-6
+
+    r = client.post(f"/ifc/models/{mid}/edit/delete", json={"guid": main})
+    assert r.status_code == 200, r.text
+    after = client.get(f"/ifc/models/{mid}/mesh/{secondary}").json()["bbox"]
+    assert abs(after["min"][1] - 0.0) < 1e-6
+    assert abs(after["max"][1] - 2.0) < 1e-6

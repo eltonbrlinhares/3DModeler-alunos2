@@ -59,8 +59,8 @@ const DEFAULT_COLUMN_HEIGHT = 3; // m — altura aplicada aos pilares ao convert
 const ELEMENT_FORMS = INSERTION_TOOLS;
 
 // Aba "Coluna metálica": famílias de catálogo (HP/W/CVS/CS) + opção de perfil
-// personalizado. As famílias vêm de src/data/steelColumnProfiles.js, geradas a
-// partir das tabelas de fabricante (Gerdau HP/W, ArcelorMittal CVS/CS).
+// personalizado. As famílias vêm de src/data/steelColumnProfiles.js (séries
+// laminadas HP/W e soldadas CVS/CS).
 const STEEL_FAMILY_SELECT_OPTIONS = [
   ...STEEL_FAMILY_OPTIONS,
   { value: "custom", label: "Personalizado..." },
@@ -68,7 +68,7 @@ const STEEL_FAMILY_SELECT_OPTIONS = [
 const DEFAULT_STEEL_FAMILY = STEEL_FAMILY_OPTIONS[0]?.value ?? "custom";
 
 // Aba "Viga metálica": famílias de catálogo (HP/W/CVS/VS) + personalizado.
-// Vêm de src/data/steelBeamProfiles.js (Gerdau HP/W, ArcelorMittal CVS/VS).
+// Vêm de src/data/steelBeamProfiles.js (séries laminadas HP/W e soldadas CVS/VS).
 const STEEL_BEAM_FAMILY_SELECT_OPTIONS = [
   ...STEEL_BEAM_FAMILY_OPTIONS,
   { value: "custom", label: "Personalizado..." },
@@ -1111,11 +1111,10 @@ export default function IfcPanel({
         setStatus("Crie primeiro um grid U/V para inserir esse elemento.");
         return;
       }
-      const levelId = activeLevelGuidRef.current ?? activeInsertionLevel()?.guid;
-      const plan = viewsRef.current.find(
-        (view) => view.type === VIEW_TYPES.PLAN && view.levelId === levelId
-      );
-      if (plan) setActiveViewId(plan.id);
+      // Antes o editor trocava automaticamente para a planta do nível ativo.
+      // Isso impedia inserir diretamente com a vista 3D aberta. A projeção do
+      // clique no plano do nível já funciona em qualquer câmera, então basta
+      // manter a vista atual e iniciar a inserção.
       insertion.begin(elemType);
     }
   };
@@ -1146,16 +1145,9 @@ export default function IfcPanel({
       // elemType — não é o caso de "dimension".
       if (ELEMENT_FORMS[tool]) setElemType(tool);
 
-      // As ferramentas estruturais trabalham em planta. Abrir automaticamente
-      // a planta do nível ativo evita que o raycast use uma elevação/corte ou a
-      // perspectiva 3D, situação em que os cliques não encontravam o grid.
-      const levelId = activeLevelGuidRef.current ?? activeInsertionLevel()?.guid;
-      const plan = viewsRef.current.find(
-        (view) => view.type === VIEW_TYPES.PLAN && view.levelId === levelId
-      );
-      if (plan) {
-        setActiveViewId(plan.id);
-      }
+      // Mantém a vista atual (inclusive 3D). O snap continua ocorrendo nas
+      // interseções de grid/datum do nível ativo, mas agora o usuário pode
+      // lançar os elementos sem sair da navegação em perspectiva.
     }
     setSketchTool(tool);
   };

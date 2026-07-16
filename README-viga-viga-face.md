@@ -1,5 +1,10 @@
 # Encaixe pela face — agora em todos os pares que precisam disso
 
+> **Atualização:** encontros em T e de canto agora são detectados pela
+> envoltória orientada da viga receptora e pelas faces topo/centro/base. Isso
+> corrige vigas com alturas diferentes e permite corte oblíquo alinhado à face.
+> Consulte `README-ENCAIXE-FACE-A-FACE.md`.
+
 Estendendo o corte pilar→viga: agora **viga→viga** (canto e T) também é
 cortada pela face, não pelo eixo. Só um arquivo mudou desta vez
 (`connectivity_service.py`) — `geometry_service.py` já tinha tudo que era

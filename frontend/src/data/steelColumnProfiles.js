@@ -1,9 +1,8 @@
 /**
  * src/data/steelColumnProfiles.js
  *
- * Catálogo de perfis metálicos para colunas, gerado a partir das tabelas
- * de fabricante (Gerdau HP/W, ArcelorMittal CVS/CS - ver /docs/perfis-fonte
- * ou os .txt originais do projeto). Dimensões convertidas de mm para m.
+ * Catálogo de perfis metálicos para colunas: séries laminadas (HP/W) e
+ * soldadas (CVS/CS). Dimensões convertidas de mm para m.
  *
  * Cada perfil: { value, b (m), h (m), tf (m), tw (m), weight (kgf/m) }
  *   b  = Largura (mesa)      -> mapeado para form.width
@@ -18,7 +17,7 @@
 
 export const STEEL_COLUMN_FAMILIES = {
   "HP": {
-    "label": "HP (Gerdau laminado)",
+    "label": "HP (perfil laminado)",
     "shape": "H",
     "profiles": [
       {
@@ -80,7 +79,7 @@ export const STEEL_COLUMN_FAMILIES = {
     ]
   },
   "W": {
-    "label": "W (Gerdau laminado)",
+    "label": "W (perfil laminado)",
     "shape": "H",
     "profiles": [
       {
@@ -886,7 +885,7 @@ export const STEEL_COLUMN_FAMILIES = {
     ]
   },
   "CVS": {
-    "label": "CVS (ArcelorMittal soldado)",
+    "label": "CVS (perfil soldado)",
     "shape": "H",
     "profiles": [
       {
@@ -1068,7 +1067,7 @@ export const STEEL_COLUMN_FAMILIES = {
     ]
   },
   "CS": {
-    "label": "CS (ArcelorMittal soldado, coluna quadrada)",
+    "label": "CS (perfil soldado, coluna quadrada)",
     "shape": "H",
     "profiles": [
       {

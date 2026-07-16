@@ -20,6 +20,7 @@ from app.models.schemas import (
 )
 from app.services import connectivity_service as conn
 from app.services import geometry_service as geo
+from app.services import semantics_service as sem
 from app.services.ifc_service import ModelEntry
 
 router = APIRouter(prefix="/ifc/models/{model_id}/geometry", tags=["geometry"])
@@ -64,6 +65,7 @@ def create_slab(req: CreateSlabRequest, entry: ModelEntry = Depends(get_entry)):
     except (RuntimeError, ValueError) as e:
         raise HTTPException(400, f"falha ao criar laje: {e}")
     conn.resync_connections(entry, slab.GlobalId)
+    sem.apply_semantics(entry, slab.GlobalId)
     return {"ok": True, "guid": slab.GlobalId, "id": slab.id()}
 
 
@@ -94,6 +96,7 @@ def create_footing(req: CreateFootingRequest, entry: ModelEntry = Depends(get_en
     except RuntimeError as e:
         raise HTTPException(400, f"falha ao criar fundação: {e}")
     conn.resync_connections(entry, footing.GlobalId)
+    sem.apply_semantics(entry, footing.GlobalId)
     return {"ok": True, "guid": footing.GlobalId, "id": footing.id()}
 
 
@@ -122,6 +125,7 @@ def create_column(req: CreateColumnRequest, entry: ModelEntry = Depends(get_entr
     except RuntimeError as e:
         raise HTTPException(400, f"falha ao criar coluna: {e}")
     conn.resync_connections(entry, column.GlobalId)
+    sem.apply_semantics(entry, column.GlobalId)
     return {"ok": True, "guid": column.GlobalId, "id": column.id()}
 
 
@@ -147,6 +151,7 @@ def create_beam(req: CreateBeamRequest, entry: ModelEntry = Depends(get_entry)):
     except RuntimeError as e:
         raise HTTPException(400, f"falha ao criar viga: {e}")
     conn.resync_connections(entry, beam.GlobalId)
+    sem.apply_semantics(entry, beam.GlobalId)
     return {"ok": True, "guid": beam.GlobalId, "id": beam.id()}
 
 
@@ -163,6 +168,7 @@ def edit_column(guid: str, req: EditColumnRequest, entry: ModelEntry = Depends(g
     except RuntimeError as e:
         raise HTTPException(404, f"guid não encontrado: {e}")
     conn.resync_connections(entry, guid)
+    sem.apply_semantics(entry, guid)
     return {"ok": True, "guid": guid}
 
 
@@ -179,6 +185,7 @@ def edit_beam(guid: str, req: EditBeamRequest, entry: ModelEntry = Depends(get_e
     except RuntimeError as e:
         raise HTTPException(404, f"guid não encontrado: {e}")
     conn.resync_connections(entry, guid)
+    sem.apply_semantics(entry, guid)
     return {"ok": True, "guid": guid}
 
 
@@ -199,6 +206,7 @@ def edit_footing(guid: str, req: EditFootingRequest, entry: ModelEntry = Depends
     except RuntimeError as e:
         raise HTTPException(404, f"guid não encontrado: {e}")
     conn.resync_connections(entry, guid)
+    sem.apply_semantics(entry, guid)
     return {"ok": True, "guid": guid}
 
 
@@ -211,6 +219,7 @@ def edit_slab(guid: str, req: EditSlabRequest, entry: ModelEntry = Depends(get_e
     except RuntimeError as e:
         raise HTTPException(404, f"guid não encontrado: {e}")
     conn.resync_connections(entry, guid)
+    sem.apply_semantics(entry, guid)
     return {"ok": True, "guid": guid}
 
 

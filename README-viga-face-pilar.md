@@ -1,5 +1,11 @@
 # Viga encaixando na FACE do pilar (não no eixo)
 
+> **Atualização:** o encaixe não depende mais da coincidência entre os eixos
+> centrais em 3D. A versão atual compara topo/centro/base, usa a envoltória
+> real de perfis metálicos e respeita pilares girados, gerando inclusive plano
+> de corte oblíquo alinhado à face receptora. Consulte
+> `README-ENCAIXE-FACE-A-FACE.md`.
+
 Antes: uma viga entre dois pilares ia de eixo a eixo (centro a centro), então
 sempre sobrepunha a seção inteira de cada pilar na ponta. Agora, quando uma
 ponta da viga está apoiada num pilar (a mesma detecção da conectividade
