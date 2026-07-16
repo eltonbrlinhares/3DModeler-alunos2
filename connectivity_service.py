@@ -497,6 +497,17 @@ def _pick_fitting(candidates: list[_BeamEndFitting]) -> _BeamEndFitting:
     positive = [c for c in candidates if c.distance > 1e-7 and c.normal_world is not None]
     if not positive:
         return _BeamEndFitting()
+    # Caso especial importante: num canto 90° viga↔viga apoiado no mesmo
+    # pilar, o corte estrito na face do pilar deixava um vão visível entre as
+    # duas vigas (cada uma encurtada até uma face diferente do pilar). Quando
+    # houver, na mesma ponta, um candidato de pilar E um de viga, priorizamos
+    # o encontro viga↔viga para manter o canto visualmente contínuo. O apoio no
+    # pilar continua registrado normalmente; só o plano de recorte visível passa
+    # a ser governado pela outra viga.
+    beam_candidates = [c for c in positive if c.priority == 1]
+    column_candidates = [c for c in positive if c.priority == 0]
+    if beam_candidates and column_candidates:
+        return min(beam_candidates, key=lambda c: (c.distance, c.target_guid))
     # Pilar tem prioridade sobre viga quando os dois ocupam o mesmo nó. Dentro
     # da mesma classe, usa a face mais próxima para não encurtar além do apoio.
     return min(positive, key=lambda c: (c.priority, c.distance, c.target_guid))
@@ -555,10 +566,21 @@ def beam_end_fittings(f: ifcopenshell.file, beam) -> tuple[_BeamEndFitting, _Bea
             if other.GlobalId == beam.GlobalId:
                 continue
             other_params = geo.get_params_f(f, other.GlobalId) or {}
-            if not _is_secondary(params, beam.GlobalId, other_params, other.GlobalId):
-                continue
             contacts = _beam_beam_contacts(f, beam, other)
-            if not any(c["source_end"] == end_index for c in contacts):
+            end_contacts = [c for c in contacts if c["source_end"] == end_index]
+            if not end_contacts:
+                continue
+            # Encontro "normal" viga↔viga: só a secundária é cortada.
+            # Exceção: quando a ponta desta viga encontra também uma PONTA da
+            # outra (target_t ≈ 0 ou 1), trata-se de um canto/L e as duas vigas
+            # podem ser ajustadas mutuamente para não abrir um vão visível.
+            corner_joint = any(
+                abs(float(c["target_t"])) <= 1e-6 or abs(float(c["target_t"]) - 1.0) <= 1e-6
+                for c in end_contacts
+            )
+            if not corner_joint and not _is_secondary(
+                params, beam.GlobalId, other_params, other.GlobalId
+            ):
                 continue
             rect = _beam_rectangle(f, other)
             if rect is None:

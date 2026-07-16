@@ -855,7 +855,16 @@ def edit_column_dimensions(
         )
 
 
-def _beam_profile_representation(f, body, profile_entity, length: float, trim_start: float = 0.0, trim_end: float = 0.0):
+def _beam_profile_representation(
+    f,
+    body,
+    profile_entity,
+    length: float,
+    trim_start: float = 0.0,
+    trim_end: float = 0.0,
+    start_normal=None,
+    end_normal=None,
+):
     """`add_profile_representation` com recorte real nas pontas (IfcBooleanClippingResult
     de um IfcHalfSpaceSolid) — usado pra "encaixar pela face" em vez de ir até
     o eixo do apoio (ver `connectivity_service.beam_end_trims`). Convenção
@@ -865,16 +874,33 @@ def _beam_profile_representation(f, body, profile_entity, length: float, trim_st
     """
     clippings = []
     if trim_start > 1e-6:
-        clippings.append({"location": (0.0, 0.0, trim_start), "normal": (0.0, 0.0, -1.0)})
+        clippings.append(
+            {
+                "location": (0.0, 0.0, trim_start),
+                "normal": tuple(start_normal or (0.0, 0.0, -1.0)),
+            }
+        )
     if trim_end > 1e-6:
-        clippings.append({"location": (0.0, 0.0, length - trim_end), "normal": (0.0, 0.0, 1.0)})
+        clippings.append(
+            {
+                "location": (0.0, 0.0, length - trim_end),
+                "normal": tuple(end_normal or (0.0, 0.0, 1.0)),
+            }
+        )
     return ifcopenshell.api.run(
         "geometry.add_profile_representation",
         f, context=body, profile=profile_entity, depth=length, clippings=clippings,
     )
 
 
-def _set_beam_end_trims_f(f: ifcopenshell.file, guid: str, trim_start: float, trim_end: float) -> None:
+def _set_beam_end_trims_f(
+    f: ifcopenshell.file,
+    guid: str,
+    trim_start: float,
+    trim_end: float,
+    start_normal=None,
+    end_normal=None,
+) -> None:
     """Regenera a Representation da viga com o recorte de ponta atual (ou
     remove o recorte, se `trim_start`/`trim_end` forem 0) — sem tocar em
     `Pset_ParametricSource` (o comprimento lógico ali continua eixo-a-eixo;
@@ -893,7 +919,16 @@ def _set_beam_end_trims_f(f: ifcopenshell.file, guid: str, trim_start: float, tr
         f, width, depth, params.get("profile"), params.get("shape"),
         params.get("h"), params.get("b"), params.get("tw"), params.get("tf"),
     )
-    rep = _beam_profile_representation(f, body, profile_entity, length, trim_start, trim_end)
+    rep = _beam_profile_representation(
+        f,
+        body,
+        profile_entity,
+        length,
+        trim_start,
+        trim_end,
+        start_normal=start_normal,
+        end_normal=end_normal,
+    )
     _replace_body_representation(f, beam, rep)
 
 
